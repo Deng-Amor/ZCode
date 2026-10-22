@@ -18,6 +18,8 @@ import type {
  * Runtime 只在统一模型调用边界设置，Adapter 在同一异步调用链内读取。
  */
 export interface ModelInvocationContext {
+  /** Runtime-only protected execution; never serialize this port into history/provider requests. */
+  confidentialController?: ConfidentialControllerExecutionPort;
   metadata?: Record<string, unknown>;
   modelCall?: ModelApiCallObservation;
   modelRequestSessionType?: ModelRequestSessionType;
@@ -44,6 +46,23 @@ export interface ModelInvocationContext {
     headersApplied: boolean;
     requestAuth?: ModelRequestAuth;
   }>;
+}
+
+export interface ConfidentialControllerBinding {
+  version: number;
+  digest: string;
+}
+
+export interface ConfidentialControllerExecutionPort {
+  use<T>(
+    consume: (content: {
+      instruction: string;
+      signal: AbortSignal;
+      version: number;
+      digest: string;
+    }) => Promise<T>,
+    options?: { signal?: AbortSignal },
+  ): Promise<{ version: number; digest: string; value: T }>;
 }
 
 /** Adapter 为单个物理请求 attempt 使用的动态鉴权材料。 */

@@ -317,6 +317,7 @@ export class ExpertWorkflowRuntimeContext {
     runId: string,
     externalSignal: AbortSignal | undefined,
   ): { dispose: () => void; signal: AbortSignal } {
+    if (this.activeRunAbortControllers.has(runId)) throw new Error("Workflow already running");
     const controller = new AbortController();
     const forwardAbort = (): void => {
       controller.abort(

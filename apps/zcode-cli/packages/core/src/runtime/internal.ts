@@ -87,6 +87,10 @@ export interface AgentRuntimeInternal
   providerRuntimeHeadersPort?: ProviderRuntimeHeadersPort;
   browserControlPort?: AgentRuntimeDeps["browserControlPort"];
   modelRequestAdmission?: AgentRuntimeDeps["modelRequestAdmission"];
+  confidentialController?: AgentRuntimeDeps["confidentialController"];
+  confidentialControllerScope?: AgentRuntimeDeps["confidentialController"];
+  confidentialControllerRunKey?: string;
+  createConfidentialControllerScope?: AgentRuntimeDeps["createConfidentialControllerScope"];
   sessionModelSelection: ModelSelection | undefined;
   messageHistory: MessageHistory;
   readFileState: ReadFileStateMap;

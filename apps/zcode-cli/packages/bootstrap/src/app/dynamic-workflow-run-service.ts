@@ -144,6 +144,7 @@ const MAX_LIST_RUNS_LIMIT = 64;
 
 /** actor runtime 工厂的输入。runId 在内，因为会话 id 与 task link 都要 run 作用域。 */
 export interface DynamicWorkflowActorRuntimeInput {
+  confidentialController?: import("@zcode/contracts").ConfidentialControllerExecutionPort;
   runId: string;
   sessionId: SessionId;
   actor: ActorRef;
@@ -236,6 +237,11 @@ export interface DynamicWorkflowRunServiceDeps {
   artifactStore?: ToolArtifactStorePort;
   /** 造一个 actor 的 child AgentRuntime（生产包装 createScriptWorkflowAgentRuntime）。 */
   createActorRuntime: (input: DynamicWorkflowActorRuntimeInput) => AgentRuntime;
+  prepareController?: (input: {
+    runId: string;
+    resume: boolean;
+    signal?: AbortSignal;
+  }) => Promise<import("@zcode/contracts").ConfidentialControllerExecutionPort | undefined>;
   /** actor 会话的 task link 落库面；缺席则跳过建 link（会话本身仍落库）。 */
   taskLinkStore?: DynamicWorkflowTaskLinkStore;
   /**
@@ -339,6 +345,7 @@ export function createDynamicWorkflowRunService(
   deps: DynamicWorkflowRunServiceDeps,
 ): DynamicWorkflowRunService {
   const runs = new Map<string, RunRegistryEntry>();
+  const preparingRuns = new Map<string, AbortController>();
   /**
    * 升级问答的停驻表。**一张，跨本服务名下所有在飞 run**：
    * qid 全局唯一正是为此——`resolveQuestion` 只收一个不透明 token，多 run 并发时让模型自己配对
@@ -398,6 +405,8 @@ export function createDynamicWorkflowRunService(
   // 两条入口（submit / resume）的实现体在 dynamic-workflow-run-submit.ts：它们只借用这里的
   // 注册表、停驻表、caps 与结算簿记，经 ctx 显式递过去，本文件不再复制那两段。
   const entryContext: DynamicWorkflowRunEntryContext = {
+    assertOpen,
+    preparingRuns,
     deps,
     runs,
     escalations,
@@ -408,7 +417,10 @@ export function createDynamicWorkflowRunService(
   return {
     countLiveRuns,
     subscribeRunSettled,
-    close,
+    close: () => {
+      for (const pending of preparingRuns.values()) pending.abort();
+      return close();
+    },
 
     // 三条入口的关闭门。`async` 只为把这个接线错误变成 rejection 而不是同步抛；门与随后的
     // 委托之间没有 await，所以不变式 6 的「登记与 launch 同一同步片」不受影响。
@@ -583,6 +595,11 @@ export function createDynamicWorkflowRunService(
       runId: string,
       initiator: DynamicWorkflowRunCancelInitiator = "user",
     ): Promise<boolean> {
+      const preparing = preparingRuns.get(runId);
+      if (preparing) {
+        preparing.abort(initiator);
+        return true;
+      }
       const entry = runs.get(runId);
       // 未知 run（或已结算）没有可中止的东西。返回 false 让上层归一成结构化的 not_found，
       // 而不是报告一次没发生的取消。

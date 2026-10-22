@@ -1,4 +1,8 @@
 import { normalizeRemoteConnectionError, sanitizeRemoteConnectionLog } from "@zcode/shared";
+import {
+  createControllerPrivateRelay,
+  type ControllerPrivateRelay,
+} from "@zcode/services/confidential-controller";
 /* eslint-disable max-lines -- Host 入口集中编排 local/remote service wiring，本次退出保护需要在同一处桥接 host 上报。 */
 /* eslint-disable max-lines -- host process 入口集中维护 local/remote 初始化和资源回收，realtime bridge 接入后先保持同文件收口。 */
 /**
@@ -242,6 +246,16 @@ const remoteMediaRangePreviewEnabled =
 type RemoteAssetDirs = import("./windowRemoteConnectionRegistry.js").WindowRemoteAssetDirs;
 
 const { parentPort } = process;
+// 不加入公开服务/attachment；后续仅交给本地Agent的私有执行适配器。
+let confidentialControllerPort: Electron.MessagePortMain | undefined;
+let confidentialControllerRelay: ControllerPrivateRelay | undefined;
+let confidentialControllerPortAccepted = false;
+function disposeConfidentialControllerPort(): void {
+  confidentialControllerRelay?.dispose();
+  confidentialControllerRelay = undefined;
+  confidentialControllerPort?.close();
+  confidentialControllerPort = undefined;
+}
 const hostNetworkCapture = createHostNetworkCapture(parentPort);
 
 // 进程检索体验优化：host 由 utilityProcess 拉起时外壳仍是 Electron Helper，
@@ -2756,6 +2770,7 @@ function disposeAttachedServicePorts(): void {
 }
 
 async function disposeHostResources(reason: string): Promise<HostShutdownResult> {
+  disposeConfidentialControllerPort();
   databaseStartup?.dispose();
   pendingStartupAttachments.clear();
   if (hasDisposedHostResources) {
@@ -2853,6 +2868,7 @@ async function disposeHostResources(reason: string): Promise<HostShutdownResult>
 }
 
 function disposeHostResourcesBestEffort(reason: string): void {
+  disposeConfidentialControllerPort();
   if (hasDisposedHostResources) {
     return;
   }
@@ -2943,6 +2959,37 @@ process.on(
 );
 
 parentPort.on("message", async (e: Electron.MessageEvent) => {
+  if (e.data?.type === HostMessageTypes.ConfidentialControllerPort) {
+    // 独立端口交接不进入通用schema错误日志，异常消息也不得打印其payload。
+    if (
+      hasDisposedHostResources ||
+      confidentialControllerPortAccepted ||
+      e.data.version !== 1 ||
+      Object.keys(e.data).some((key) => key !== "type" && key !== "version") ||
+      e.ports.length !== 1
+    ) {
+      for (const rejected of e.ports) rejected.close();
+      return;
+    }
+    confidentialControllerPortAccepted = true;
+    const privatePort = e.ports[0]!;
+    confidentialControllerPort = privatePort;
+    const relay = createControllerPrivateRelay({
+      send: (command) => privatePort.postMessage(command),
+      close: () => privatePort.close(),
+    });
+    confidentialControllerRelay = relay;
+    const onPrivateMessage = (event: Electron.MessageEvent) => relay.receive(event.data);
+    privatePort.on("message", onPrivateMessage);
+    privatePort.once("close", () => {
+      privatePort.removeListener("message", onPrivateMessage);
+      relay.dispose();
+      if (confidentialControllerRelay === relay) confidentialControllerRelay = undefined;
+      if (confidentialControllerPort === privatePort) confidentialControllerPort = undefined;
+    });
+    privatePort.start();
+    return;
+  }
   const result = parseHostIncomingMessageEvent(e);
   if (!result.success) {
     logger.error("invalid parentPort message:", formatZodError(result.error));
@@ -3749,6 +3796,14 @@ parentPort.on("message", async (e: Electron.MessageEvent) => {
           log: (message, details) => logger.warn(message, details),
           establishOwner: () => {
             const initializedServices = createLocalServices({
+              createControllerPrivateChannel: (send, close) => {
+                // 按创建时读取连接，避免服务初始化早于 Main 私有端口交接。
+                if (!confidentialControllerRelay) {
+                  close();
+                  return { receive() {}, dispose() {} };
+                }
+                return confidentialControllerRelay.createChannel({ send, close });
+              },
               reportPluginTelemetryEvent: (event) => {
                 parentPort?.postMessage({
                   type: HostResponseTypes.PluginTelemetry,

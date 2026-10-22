@@ -1,8 +1,225 @@
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { chmod, mkdtemp, rm, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createNodeSkillAdapter } from "../src/skills/index.js";
+
+function managedFixture(files: Record<string, string> = { "SKILL.md": "# Signed controller" }) {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const payload = Buffer.from(
+    JSON.stringify({
+      schemaVersion: 1,
+      skillId: "controller-id",
+      name: "controller",
+      version: 2,
+      files: Object.entries(files).map(([path, content]) => ({
+        path,
+        contentBase64: Buffer.from(content).toString("base64"),
+        sha256: createHash("sha256").update(content).digest("hex"),
+      })),
+    }),
+  );
+  return {
+    trust: {
+      skillId: "controller-id",
+      name: "controller",
+      minimumVersion: 2,
+      publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    },
+    bundle: {
+      schemaVersion: 1,
+      payloadBase64: payload.toString("base64"),
+      signatureBase64: sign(null, payload, privateKey).toString("base64"),
+    },
+  };
+}
+
+describe("managed skill policy", () => {
+  it.each(["controller/team", "controller:team", "controller\\team", "vendor/controller/team"])(
+    "rejects qualified managed identity %s before a missing bundle can enable fallback",
+    (identity) => {
+      const entry = managedFixture();
+      for (const field of ["name", "skillId"] as const) {
+        expect(() =>
+          createNodeSkillAdapter({
+            managedSkills: [
+              {
+                trust: { ...entry.trust, [field]: identity },
+                bundle: undefined,
+              },
+            ],
+          }),
+        ).toThrow("Invalid managed skill identity");
+      }
+    },
+  );
+
+  it("consumes a fixed signed snapshot and signed references without writable paths", async () => {
+    const entry = managedFixture({
+      "SKILL.md": "# Signed controller",
+      "references/rules.md": "Signed rules",
+    });
+    const managedSkills = [entry];
+    const adapter = createNodeSkillAdapter({ managedSkills });
+    entry.trust.name = "replacement";
+    entry.bundle.payloadBase64 = "corrupt";
+    managedSkills.length = 0;
+    const request = { name: "controller", workingDirectory: tmpdir(), roots: [] };
+    const first = await adapter.loadSkill(request);
+    expect(first.content).toContain("# Signed controller");
+    expect(first.content).toContain("references/rules.md");
+    expect(first.content).toContain("Signed rules");
+    expect(first.baseDirectory).toBe("managed-skill://controller-id/2");
+    expect(first.truncated).toBe(false);
+    first.metadata.name = "poisoned";
+    expect((await adapter.loadSkill(request)).metadata.name).toBe("controller");
+    expect((await adapter.loadSkill({ ...request, name: "controller-id" })).content).toBe(
+      first.content,
+    );
+    await expect(adapter.loadSkill({ ...request, maxBytes: 5 })).rejects.toThrow(/limit/i);
+  });
+
+  it("blocks reserved identities through explicit roots, extra roots and namespaces", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "zcode-managed-skills-"));
+    try {
+      for (const name of ["controller", "CONTROLLER-ID", "vendor/controller", "safe"]) {
+        const skillDir = join(dir, name.replaceAll("/", "-"));
+        await mkdir(skillDir, { recursive: true });
+        await writeSkill(skillDir, name, "Local impostor");
+      }
+      const adapter = createNodeSkillAdapter({
+        managedSkills: [managedFixture()],
+        extraRoots: [dir],
+        homeDirectory: join(dir, "home"),
+      });
+      const roots = [
+        {
+          path: dir,
+          namespace: "vendor",
+          scope: "project" as const,
+          source: "zcode" as const,
+          priority: -1,
+        },
+      ];
+      for (const rootOverride of [roots, undefined]) {
+        const outcome = await adapter.discoverSkills({
+          workingDirectory: dir,
+          roots: rootOverride,
+        });
+        expect(outcome.skills.map((s) => s.name)).toEqual(["controller", "safe"]);
+        expect(outcome.diagnostics.filter((d) => d.code === "skill_duplicate_name")).toHaveLength(
+          3,
+        );
+      }
+      await expect(
+        adapter.loadSkill({ name: "vendor/controller", workingDirectory: dir, roots }),
+      ).rejects.toThrow();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["missing", "corrupt", "rollback", "script", "binary"])(
+    "fails closed for %s bundles",
+    async (failure) => {
+      const entry = managedFixture(
+        failure === "script"
+          ? { "SKILL.md": "Body", "scripts/run.js": "run()" }
+          : failure === "binary"
+            ? { "SKILL.md": "Body", "references/blob.bin": "binary" }
+            : undefined,
+      );
+      if (failure === "corrupt") entry.bundle.payloadBase64 = "corrupt";
+      if (failure === "rollback") entry.trust.minimumVersion = 3;
+      const adapter = createNodeSkillAdapter({
+        managedSkills: [{ ...entry, bundle: failure === "missing" ? undefined : entry.bundle }],
+      });
+      const outcome = await adapter.discoverSkills({ workingDirectory: tmpdir(), roots: [] });
+      expect(outcome.skills).toEqual([]);
+      expect(outcome.diagnostics[0]?.severity).toBe("error");
+      await expect(
+        adapter.loadSkill({ name: "controller", workingDirectory: tmpdir(), roots: [] }),
+      ).rejects.toThrow(/Managed skill unavailable/);
+    },
+  );
+
+  it("rejects ambiguous trusted reservations", () => {
+    const entry = managedFixture();
+    expect(() => createNodeSkillAdapter({ managedSkills: [entry, entry] })).toThrow(
+      /Duplicate managed/,
+    );
+    const collision = managedFixture();
+    collision.trust.skillId = "CONTROLLER";
+    expect(() => createNodeSkillAdapter({ managedSkills: [entry, collision] })).toThrow(
+      /Duplicate managed/,
+    );
+    expect(() =>
+      createNodeSkillAdapter({
+        managedSkills: [{ ...entry, trust: { ...entry.trust, name: " " } }],
+      }),
+    ).toThrow(/Invalid managed/);
+  });
+
+  it("never falls back to a local namespaced impostor when the signed bundle is missing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "zcode-managed-missing-"));
+    try {
+      await writeSkill(dir, "controller", "Untrusted local fallback");
+      const entry = managedFixture();
+      const adapter = createNodeSkillAdapter({ managedSkills: [{ ...entry, bundle: undefined }] });
+      const roots = [
+        {
+          path: dir,
+          namespace: "plugin",
+          source: "plugin" as const,
+          scope: "user" as const,
+          priority: -100,
+        },
+      ];
+      expect((await adapter.discoverSkills({ workingDirectory: dir, roots })).skills).toEqual([]);
+      for (const name of [
+        "controller",
+        "controller-id",
+        "plugin/controller",
+        "plugin:controller",
+        `${dir}/controller/SKILL.md`,
+      ]) {
+        await expect(adapter.loadSkill({ workingDirectory: dir, roots, name })).rejects.toThrow(
+          /Managed skill/,
+        );
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { "SKILL.md": "---\nname: impostor\ndescription: test\n---\nBody" },
+    { "SKILL.md": "Body", "references/rules.txt": "bad\0text" },
+    { "SKILL.md": "x".repeat(200_001) },
+  ])("rejects inconsistent identity, non-text and oversized content", async (files) => {
+    const adapter = createNodeSkillAdapter({ managedSkills: [managedFixture(files)] });
+    await expect(
+      adapter.loadSkill({ name: "controller", workingDirectory: tmpdir(), roots: [] }),
+    ).rejects.toThrow(/Managed skill unavailable/);
+  });
+
+  it("keeps policy reservations after discovery results are modified or the bundle is replaced", async () => {
+    const entry = managedFixture();
+    const adapter = createNodeSkillAdapter({ managedSkills: [entry] });
+    const outcome = await adapter.discoverSkills({ workingDirectory: tmpdir(), roots: [] });
+    outcome.skills[0]!.path = "mutable-path";
+    outcome.skills[0]!.frontmatterKeys.push("unsafe");
+    entry.trust.minimumVersion = 100;
+    const loaded = await adapter.loadSkill({
+      name: "controller",
+      workingDirectory: tmpdir(),
+      roots: [],
+    });
+    expect(loaded.metadata.path).toBe("managed-skill://controller-id/2/SKILL.md");
+    expect(loaded.metadata.frontmatterKeys).toEqual([]);
+  });
+});
 
 describe("NodeSkillAdapter", () => {
   it("discovers project skills from SKILL.md metadata", async () => {

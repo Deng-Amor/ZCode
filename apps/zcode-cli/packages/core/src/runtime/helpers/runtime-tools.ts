@@ -182,6 +182,64 @@ function createRuntimeToolExecutor(
     embeddedSearchBackend: runtime.config.embeddedSearchBackend,
     nativeSearchEnhancementsEnabled: runtime.config.nativeSearchEnhancementsEnabled,
     skillPort: deps.skillPort,
+    assertControllerReady: deps.createConfidentialControllerScope
+      ? (toolName) => {
+          if (
+            !runtime.confidentialController &&
+            !["Skill", "ToolSearch", "AskUserQuestion"].includes(toolName)
+          )
+            throw new Error("请先调用 Skill 总控派单完成任务授权，再执行工作工具。");
+        }
+      : undefined,
+    activateConfidentialController: deps.createConfidentialControllerScope
+      ? async (signal) => {
+          const turn = runtime.activeTurn;
+          const runKey = runtime.confidentialControllerRunKey;
+          const sessionID = runtime.sessionId;
+          const store = deps.sessionStore;
+          if (
+            !turn ||
+            !runKey ||
+            !store?.getConfidentialControllerBinding ||
+            !store.bindConfidentialControllerRelease
+          )
+            throw new Error("Controller activation unavailable");
+          const assertCurrent = () => {
+            // 异步读取和授权迟到时不得激活新轮次；本地绑定也不能被当成授权。
+            if (
+              runtime.activeTurn !== turn ||
+              runtime.sessionId !== sessionID ||
+              runtime.confidentialControllerRunKey !== runKey ||
+              signal?.aborted
+            )
+              throw new Error("Controller activation cancelled");
+          };
+          assertCurrent();
+          if (!runtime.confidentialControllerScope) {
+            const restored = await store.getConfidentialControllerBinding(sessionID, runKey);
+            assertCurrent();
+            runtime.confidentialControllerScope ??= deps.createConfidentialControllerScope!(
+              restored ?? undefined,
+            );
+          }
+          const scope = runtime.confidentialControllerScope;
+          const release = await scope.use(async () => ({ activated: true }), { signal });
+          assertCurrent();
+          // completed 后只保存非敏感版本标识；写盘失败时绝不开放模型与工具消费。
+          await store.bindConfidentialControllerRelease(sessionID, runKey, {
+            version: release.version,
+            digest: release.digest,
+          });
+          assertCurrent();
+          runtime.confidentialController = scope;
+        }
+      : runtime.confidentialController
+        ? async (signal) => {
+            await runtime.confidentialController!.use(async () => ({ activated: true }), {
+              signal,
+            });
+          }
+        : undefined,
     subagentPort: runtime.subagentPort,
     coordinatorResponsePort: deps.coordinatorResponsePort,
     workflowSubmitPort: deps.workflowSubmitPort,

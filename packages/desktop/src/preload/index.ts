@@ -262,6 +262,18 @@ window.addEventListener("DOMContentLoaded", updateRendererProcessTitle, {
  * 通过 MessagePort RPC 访问，不再经过此 bridge。
  */
 contextBridge.exposeInMainWorld("zcode", {
+  ccodeAccount: {
+    onStateChanged: (listener: () => void) => {
+      const handler = () => listener();
+      ipcRenderer.on(PlatformChannels.CcodeAccountChanged, handler);
+      return () => ipcRenderer.removeListener(PlatformChannels.CcodeAccountChanged, handler);
+    },
+    getState: () => ipcRenderer.invoke(PlatformChannels.CcodeAccountState),
+    listTenants: () => ipcRenderer.invoke(PlatformChannels.CcodeAccountTenants),
+    login: (input: import("@zcode/shared").CcodePlatformLoginInput) =>
+      ipcRenderer.invoke(PlatformChannels.CcodeAccountLogin, input),
+    logout: () => ipcRenderer.invoke(PlatformChannels.CcodeAccountLogout),
+  } satisfies import("@zcode/shared").CcodeAccountPort,
   connectRemote: (
     options: RemoteTarget,
     requestId?: string,

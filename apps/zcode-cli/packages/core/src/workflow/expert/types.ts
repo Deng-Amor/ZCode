@@ -9,6 +9,7 @@ import type {
 } from "@zcode/contracts";
 
 export interface ExpertWorkflowAgentRunInput {
+  confidentialController?: import("@zcode/contracts").ConfidentialControllerExecutionPort;
   abortSignal?: AbortSignal;
   activityId: string;
   cwd: string;
@@ -43,6 +44,11 @@ export interface ExpertWorkflowAgentRunner {
 }
 
 export interface ExpertWorkflowRuntimeDeps {
+  prepareController?: (
+    snapshot: ExpertWorkflowRunSnapshot,
+    resume: boolean,
+    signal?: AbortSignal,
+  ) => Promise<import("@zcode/contracts").ConfidentialControllerExecutionPort | undefined>;
   agentRunner: ExpertWorkflowAgentRunner;
   createActivityId?: () => string;
   createRunId?: () => string;
@@ -53,6 +59,7 @@ export interface ExpertWorkflowRuntimeDeps {
 }
 
 export interface ExpertWorkflowRunOptions {
+  confidentialController?: import("@zcode/contracts").ConfidentialControllerExecutionPort;
   abortSignal?: AbortSignal;
   cwd: string;
   definitionId?: string;

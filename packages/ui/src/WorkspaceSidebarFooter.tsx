@@ -1,4 +1,5 @@
 import { SidebarNativeTooltip, ControlHintTooltip } from "@/ControlHintTooltip.js";
+import { CcodeAccountEntry } from "@/ccode-account/index.js";
 /* oxlint-disable eslint(max-lines) -- footer 聚合账户、主题、模式和快捷键菜单。 */
 import type { Locale, UserInfo } from "@zcode/shared";
 import { memo, useCallback, useEffect, useState, type ReactNode } from "react";
@@ -233,6 +234,7 @@ export const WorkspaceSidebarFooter = memo(function WorkspaceSidebarFooterCompon
     // footer 被 Settings 复用，页面专属边距由调用方传入，避免修改共享默认样式。
     <footer className={cn("flex shrink-0 flex-col gap-2.5 px-4 pt-2 pb-4", className)}>
       {banner}
+      <CcodeAccountEntry />
       <div className="flex min-w-0 gap-2">
         <DropdownMenu open={profileMenuOpen} onOpenChange={setProfileMenuOpen}>
           <DropdownMenuTrigger asChild>

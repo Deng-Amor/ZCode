@@ -87,6 +87,7 @@ export interface AiSdkBoundModelResolution {
   resolveRequest(input: {
     readonly options: ModelOptionValues;
     readonly requestAuth?: ModelRequestAuth;
+    readonly skipTranscript?: boolean;
   }): AiSdkResolvedModel;
 }
 
@@ -206,8 +207,8 @@ export class AiSdkModelExecution {
     return {
       // 这里只构造不执行请求的基础 Model；真正请求必须通过 resolveRequest 绑定完整 options。
       resolved: this.resolveSnapshot(snapshot, undefined, undefined, undefined),
-      resolveRequest: ({ options, requestAuth }) =>
-        this.resolveSnapshot(snapshot, requestAuth, optionMaps, options),
+      resolveRequest: ({ options, requestAuth, skipTranscript }) =>
+        this.resolveSnapshot(snapshot, requestAuth, optionMaps, options, skipTranscript),
     };
   }
 
@@ -245,11 +246,13 @@ export class AiSdkModelExecution {
     requestAuth: ModelRequestAuth | undefined,
     optionMaps: CompiledModelOptionMaps | undefined,
     optionValues: ModelOptionValues | undefined,
+    skipTranscript = false,
   ): AiSdkResolvedModel {
     const providerConfig = applyModelRequestAuth(snapshot.providerConfig, requestAuth);
     // Model 创建时的 Provider 事实必须被冻结在当前 binding 中。若按 providerId 缓存
     // factory，配置更新后创建的新 Model 会错误复用旧 Endpoint / Header / API Key。
-    const rawRequestBodyCapture: RawRequestBodyCapture = {};
+    // 仅关闭落盘不足以隔离正文；每请求绑定同时停止保留原始请求副本。
+    const rawRequestBodyCapture: RawRequestBodyCapture | undefined = skipTranscript ? undefined : {};
     const factory = this.createFactory(
       snapshot.providerId,
       providerConfig,
@@ -277,7 +280,7 @@ export class AiSdkModelExecution {
     providerConfig: AiSdkProviderConfig,
     optionMaps: CompiledModelOptionMaps | undefined,
     optionValues: ModelOptionValues | undefined,
-    rawRequestBodyCapture: RawRequestBodyCapture,
+    rawRequestBodyCapture: RawRequestBodyCapture | undefined,
     supportsJsonSchemaOutput: boolean,
     apiKeyId?: string,
   ): LanguageModelFactory {

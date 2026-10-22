@@ -76,6 +76,28 @@ function modelFactoryWithWebSearch(requests: SeenRequest[]) {
 }
 
 describe("runtime model factory binds admission and retry budget (v3 决策 42)", () => {
+  it("protects turn and tool model payloads for startup global prompts", async () => {
+    const requests: SeenRequest[] = [];
+    const runtime = createTestAgentRuntime(
+      createSessionId("runtime-global-prompt-privacy"),
+      { modelSelection, modelStreaming: "off", globalSystemPrompt: "PRIVATE_GLOBAL_SENTINEL" },
+      {
+        eventStore: createTestSessionEventStore(),
+        modelFactory: modelFactoryWithWebSearch(requests),
+      },
+    );
+    await runtime.executeTurn("search");
+    expect(requests.length).toBeGreaterThan(1);
+    for (const request of requests) {
+      expect(request.metadata).toMatchObject({
+        confidentialController: true,
+        skipTranscript: true,
+      });
+    }
+    expect(requests.some((request) => request.metadata?.querySource === "web_search_tool")).toBe(
+      true,
+    );
+  });
   it("WebSearch 工具内部的模型请求带 runtime 的准入端口与 workflow_child 的无上限预算", async () => {
     const admission = admissionStub();
     const requests: SeenRequest[] = [];

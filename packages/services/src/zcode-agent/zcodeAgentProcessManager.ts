@@ -3,8 +3,13 @@ import { resolveZCodeAgentSpawnCwd } from "#src/zcode-agent/zcodeAgentSpawnCwd.j
 import type { ZCodeAgentStorageStartupSnapshot } from "#src/zcode-agent/zcodeAgent.js";
 /* eslint-disable max-lines -- zcodeAgentProcessManager 集中维护 agent 子进程启动、复用、超时回收和 runtime identity，拆分会扩大进程生命周期状态同步面 */
 import { spawn } from "node:child_process";
+import {
+  attachControllerChildChannel,
+  type ControllerPrivateChannelFactory,
+} from "../confidential-controller/index.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Emitter } from "@zcode/rpc";
@@ -40,6 +45,10 @@ import type { RuntimeProcessLifecycleReporter } from "../process/runtimeProcessL
 import { buildAgentWorkspaceIdentityEnv } from "../runtime-tools/agentProxyEnv.js";
 
 export interface ZCodeAgentCommand {
+  /** 只有实现专用 Node IPC 消费端的配套 CLI 才能显式声明。 */
+  supportsConfidentialControllerIpc?: boolean;
+  /** 配套JS产物候选；必须校验构建声明和摘要才能获得私有通道。 */
+  confidentialControllerBundleEntry?: string;
   /** 本地配套 CLI bundle 的存储专用 Worker 入口；远端/自定义命令不推断能力。 */
   storagePreparationEntry?: string;
   /** 本次部署的 Agent 支持迁移前的启动通知；旧自定义命令保持原协议。 */
@@ -62,6 +71,7 @@ export type ZCodeAgentCommandResolver = (
 ) => Promise<ZCodeAgentCommand | null> | ZCodeAgentCommand | null;
 
 export interface ZCodeAgentProcessManagerOptions {
+  createControllerPrivateChannel?: ControllerPrivateChannelFactory;
   commandResolver?: ZCodeAgentCommandResolver;
   presentationSurface?: ZCodeAgentPresentationSurface;
   requestTimeoutMs?: number;
@@ -374,6 +384,7 @@ function resolveBundledWorkspaceZCodeAgentCommand(
       args: [entrypoint, "app-server", "--stdio"],
       // Worker 与 Electron Node 子进程的 V8 snapshot 可不同；临时存储准备继续用 JS。
       storagePreparationEntry: distEntrypoint,
+      ...(!useBytecode ? { confidentialControllerBundleEntry: distEntrypoint } : {}),
       cwd: context.workspacePath,
       // 桌面端 host 运行在 Electron utility process 中，process.execPath 指向 Electron Helper。
       // 这里显式启用 Node 运行模式，避免内置 zcode-agent 被当成 Electron/Chromium 子进程启动并卡在 GPU 初始化。
@@ -434,6 +445,7 @@ function resolveElectronRuntimeZCodeAgentCommand(
     command: process.execPath,
     args: [bundlePath, ...ZCODE_AGENT_RUNTIME.spawnArgs],
     storagePreparationEntry: bundlePath,
+    confidentialControllerBundleEntry: bundlePath,
     cwd: context.workspacePath,
     // 关键：必须以纯 Node 模式启动，否则子进程会被当成 Electron/Chromium 子进程卡在 GPU 初始化。
     env: { ELECTRON_RUN_AS_NODE: "1" },
@@ -466,6 +478,27 @@ export function resolveDefaultZCodeAgentCommand(
       : resolveDeployedZCodeAgentBinaryCommand(context),
     context.presentationSurface,
   );
+}
+
+async function withVerifiedControllerCapability(
+  command: ZCodeAgentCommand,
+  signal: AbortSignal,
+): Promise<ZCodeAgentCommand> {
+  if (!command.confidentialControllerBundleEntry || command.supportsConfidentialControllerIpc) return command;
+  try {
+    const entry = command.confidentialControllerBundleEntry;
+    const declaration = JSON.parse(await readFile(join(dirname(entry), 'ccode-controller-capability.json'), { encoding: 'utf8', signal }));
+    if (!declaration || Object.keys(declaration).sort().join(',') !== 'entry,protocolVersion,schemaVersion,sha256' ||
+      declaration.schemaVersion !== 1 || declaration.protocolVersion !== 2 || declaration.entry !== 'zcode.cjs' ||
+      typeof declaration.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(declaration.sha256)) return command;
+    const digest = createHash('sha256').update(await readFile(entry, { signal })).digest('hex');
+    if (digest !== declaration.sha256) return command;
+    return { ...command, supportsConfidentialControllerIpc: true };
+  } catch {
+    // 旧包和不完整构建没有私有能力，不能把文件名或存储能力当作授权依据。
+    signal.throwIfAborted();
+    return command;
+  }
 }
 
 function applyPresentationSurfaceToCommand(
@@ -506,6 +539,8 @@ export function wrapZCodeAgentCommandWithStdioTapDevProxy(
   command: ZCodeAgentCommand,
   workspaceKey: string,
 ): ZCodeAgentCommand {
+  // stdio tap 代理只转发三根 pipe，不转发 Node IPC；受保护 CLI 必须直连。
+  if (command.supportsConfidentialControllerIpc) return command;
   const tapState = readZCodeStdioTapDevState();
   if (!tapState.enabled) {
     return command;
@@ -573,6 +608,7 @@ export class ZCodeAgentProcessManager {
   private readonly commandResolver: ZCodeAgentCommandResolver;
   private readonly presentationSurface: ZCodeAgentProcessManagerOptions["presentationSurface"];
   private readonly requestTimeoutMs: number | undefined;
+  private readonly createControllerPrivateChannel: ControllerPrivateChannelFactory | undefined;
   private readonly processLifecycleReporter: RuntimeProcessLifecycleReporter | undefined;
   private readonly resolveSpawnEnv: ZCodeAgentProcessManagerOptions["resolveSpawnEnv"];
   private readonly waitForSpawnAdmission: ZCodeAgentProcessManagerOptions["waitForSpawnAdmission"];
@@ -593,6 +629,7 @@ export class ZCodeAgentProcessManager {
     this.commandResolver = options?.commandResolver ?? resolveDefaultZCodeAgentCommand;
     this.presentationSurface = options?.presentationSurface;
     this.requestTimeoutMs = options?.requestTimeoutMs;
+    this.createControllerPrivateChannel = options?.createControllerPrivateChannel;
     this.processLifecycleReporter = options?.processLifecycleReporter;
     this.resolveSpawnEnv = options?.resolveSpawnEnv;
     this.waitForSpawnAdmission = options?.waitForSpawnAdmission;
@@ -980,7 +1017,11 @@ export class ZCodeAgentProcessManager {
     if (admissionSignal.aborted) {
       throw admissionSignal.reason ?? new Error("ZCode agent process start was cancelled.");
     }
-    const effectiveCommand = wrapZCodeAgentCommandWithStdioTapDevProxy(command, workspaceKey);
+    const verifiedCommand = this.createControllerPrivateChannel
+      ? await withVerifiedControllerCapability(command, admissionSignal)
+      : command;
+    admissionSignal.throwIfAborted();
+    const effectiveCommand = wrapZCodeAgentCommandWithStdioTapDevProxy(verifiedCommand, workspaceKey);
     log("ZCode agent command resolved", {
       workspaceKey,
       command: command.command,
@@ -1029,6 +1070,9 @@ export class ZCodeAgentProcessManager {
       spawnPreflight,
     });
     const spawnRequestedAt = Date.now();
+    const controllerChannelFactory = effectiveCommand.supportsConfidentialControllerIpc
+      ? this.createControllerPrivateChannel
+      : undefined;
     const child = spawn(effectiveCommand.command, spawnPreflight.args, {
       cwd: spawnPreflight.cwd,
       // agent 可能再派生实际 runtime/MCP 子进程。POSIX 下让 wrapper 进入独立进程组，
@@ -1044,9 +1088,13 @@ export class ZCodeAgentProcessManager {
         // 身份/隔离语义使用 workspaceIdentity；cwd 继续使用 workspacePath。
         ...buildAgentWorkspaceIdentityEnv(params.workspaceIdentity),
         ...buildE2EAgentCoverageEnv(),
+        // 只由本次 spawn 决定能力，禁止继承父进程或自定义命令的残留标记。
+        ZCODE_CONFIDENTIAL_CONTROLLER_IPC: controllerChannelFactory ? "1" : undefined,
       },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+      stdio: ["pipe", "pipe", "pipe", ...(controllerChannelFactory ? ["ipc" as const] : [])],
+      // Node 类型的非空流重载只接受三元素 tuple；这里前三项固定为 pipe。
+    }) as ChildProcessWithoutNullStreams;
+    if (controllerChannelFactory) attachControllerChildChannel(child, controllerChannelFactory);
     const startedAt = Date.now();
     const stderrTail = createAgentStderrTail();
     const transport = new ZCodeStdioTransport(child, {

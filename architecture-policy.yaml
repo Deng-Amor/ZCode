@@ -733,6 +733,44 @@ modules:
       ui: .
     owner: conversation
 
+  - id: cli-confidential-controller
+    roots: [apps/zcode-cli/packages/adapters/src/confidential-controller]
+    managed: true
+    requires: [zcode-cli]
+    publicEntrypoints: [apps/zcode-cli/packages/adapters/src/confidential-controller/index.ts, apps/zcode-cli/packages/adapters/src/confidential-controller/contract.ts]
+    layers: {adapters: .}
+    owner: agent-runtime
+  - id: managed-skills
+    roots:
+      - packages/shared/src/managed-skills
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/shared/src/managed-skills/index.ts
+      - packages/shared/src/managed-skills/contract.ts
+    layers:
+      adapters: .
+    owner: shared
+  - id: confidential-controller
+    roots: [packages/services/src/confidential-controller]
+    managed: true
+    requires: [managed-skills, shared]
+    publicEntrypoints:
+      - packages/services/src/confidential-controller/index.ts
+      - packages/services/src/confidential-controller/contract.ts
+    layers: {adapters: .}
+    owner: desktop-settings
+  - id: ccode-account-ui
+    roots: [packages/ui/src/ccode-account, packages/ui/src/hooks/useCcodeAccount.ts]
+    managed: true
+    requires: [ui, shared]
+    publicEntrypoints:
+      - packages/ui/src/ccode-account/index.ts
+      - packages/ui/src/ccode-account/contract.ts
+      - packages/ui/src/hooks/useCcodeAccount.ts
+    layers: {ui: .}
+    owner: desktop-settings
+
 global:
   # 临时时间戳（2026-09-10）：unmanaged-new-file 只约束此日期之后首次入库的文件。
   # 基于领先 staging 很多的分支开工时，merge-base 之前的"新增"文件不应被追溯。
@@ -886,3 +924,8 @@ exceptions:
       - packages/ui/src/settings/DynamicWorkflowModeSetting.tsx
       - packages/ui/src/store/dynamicWorkflowAvailabilityStore.ts
     reason: Admitted upstream files edited only to let the user's dynamic workflow mode choice always win and keep the settings row visible; adopting packages/shared/src and packages/ui/src needs a separate module boundary refactor.
+  - id: workflow-controller-existing-entry
+    rule: unmanaged-new-file
+    paths:
+      - apps/zcode-cli/packages/bootstrap/src/app/dynamic-workflow-run-submit.ts
+    reason: Existing origin/main launch entry is changed only to bind confidential controller versions and serialize cancellable recovery admission. This does not introduce a new source file or cross-module dependency; adoption of the legacy zcode-cli bootstrap boundary is separate work.

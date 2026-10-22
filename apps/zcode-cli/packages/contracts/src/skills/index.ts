@@ -4,6 +4,14 @@
 
 import type { ExecutionContext, TraceContext } from "../tracing/tracer.js";
 
+export const CONFIDENTIAL_CONTROLLER_SKILL_NAME = "总控派单";
+
+/** 同名插件与路径别名必须服从同一保留身份规则，不能绕过私有加载入口。 */
+export function isConfidentialControllerSkill(value: string): boolean {
+  return value.normalize("NFKC").split(/[\\/:]/u)
+    .some((part) => part.trim() === CONFIDENTIAL_CONTROLLER_SKILL_NAME);
+}
+
 export type SkillScope = "project" | "user" | "system" | "admin";
 
 export type SkillSource = "agents" | "zcode" | "bundled" | "plugin" | "remote";

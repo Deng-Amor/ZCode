@@ -159,6 +159,11 @@ export interface ZCodeAppOptions {
   sessionMailboxPort?: SessionMailboxPort;
   inputHistoryStore?: InputHistoryStorePort;
   modelAdapter?: AiSdkModelAdapter;
+  /** Only supplied by protected task admission; no rule text in App options. */
+  confidentialController?: import("@zcode/contracts").ConfidentialControllerExecutionPort;
+  createConfidentialControllerScope?: (
+    restored?: import("@zcode/contracts").ConfidentialControllerBinding,
+  ) => import("@zcode/contracts").ConfidentialControllerExecutionPort;
   /** Worker 进程拥有的 Registry；App 只借用，不负责释放。 */
   providerRegistry: ProviderRegistryModelSource;
   resolveEffectiveModelSelection?: (selection: ModelSelection) => EffectiveModelSelectionResult;
@@ -832,6 +837,9 @@ export interface ResolveLatestSessionOptions {
 }
 
 export interface RunZCodeProtocolAgentOptions {
+  /** Trusted startup configuration; never persisted as session persona. */
+  globalSystemPrompt?: string;
+  createConfidentialControllerScope?: ZCodeAppOptions["createConfidentialControllerScope"];
   /** 入口拥有退出时限；bootstrap 只编排取消和资源清理，不直接退出进程。 */
   lifecycle?: {
     readonly signal: AbortSignal;

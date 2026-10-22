@@ -155,6 +155,9 @@ export function createStreamTextOptions(input: {
     // printing its generic system-message warning to process stderr.
     allowSystemInMessages: true,
     maxRetries: 0,
+    // SDK 默认 onError 会直接输出原异常，绕过私有调用的后续脱敏；仅关闭该副作用，
+    // fullStream 的 error part 仍交给 runner 分类和受控失败出口，普通请求保留默认诊断。
+    onError: input.request.metadata?.confidentialController === true ? () => undefined : undefined,
     // AI SDK 会吞掉 Anthropic message_start 等 metadata 事件；compact 需要
     // 在 adapter 内观察 raw event 才能精确结束 SSE retry，raw chunk 不会上送 Core/UI。
     includeRawChunks: input.request.preserveProviderStreamBoundaries ? true : undefined,

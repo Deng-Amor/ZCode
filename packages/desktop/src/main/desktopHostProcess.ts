@@ -1,4 +1,5 @@
 import { ingestToolExecResource } from "./desktopResourceTelemetry.js";
+import type { ControllerApplication } from "@zcode/services/confidential-controller";
 import { ingestMcpResourceSamples } from "./processResourceMcpTelemetrySource.js";
 /* eslint-disable max-lines -- host process 统一处理 main↔host 生命周期、日志、ZCode Agent，拆分前先保持跨进程消息收口。 */
 import {
@@ -235,6 +236,7 @@ export function spawnHostProcess(
     }) => Promise<{ ok: boolean; [k: string]: unknown }>;
     /** Host 已完成附件授权后，由 Main 将本地视频 realpath 加入精确协议授权集合。 */
     authorizeLocalMediaPreviewPath?: (path: string) => Promise<string>;
+    createControllerPrivateChannel?: ControllerApplication["createPrivateChannel"];
     /** Host 校验完插件 UI HTML 后交给 Main 沙箱注册表登记，返回句柄。 */
     registerPluginSandbox?: (
       input: PluginSandboxRegisterRequestPayload,
@@ -643,6 +645,40 @@ export function spawnHostProcess(
   }
 
   registerHostProcess(label, child);
+
+  // 正文只能走独立父子进程端口，不能经过广播、renderer RPC 或stdio日志链路。
+  if (dependencies.createControllerPrivateChannel) {
+    const { port1, port2 } = new MessageChannelMain();
+    let channel: ReturnType<ControllerApplication["createPrivateChannel"]> | undefined;
+    try {
+      channel = dependencies.createControllerPrivateChannel({
+        send: (event) => port1.postMessage(event),
+        close: () => port1.close(),
+      });
+      const onMessage = (event: Electron.MessageEvent) => channel?.receive(event.data);
+      const dispose = () => {
+        port1.removeListener("message", onMessage);
+        port1.removeListener("close", dispose);
+        child.removeListener("exit", dispose);
+        channel?.dispose();
+      };
+      port1.on("message", onMessage);
+      port1.once("close", dispose);
+      child.once("exit", dispose);
+      port1.start();
+      try {
+        child.postMessage({ type: HostMessageTypes.ConfidentialControllerPort, version: 1 }, [port2]);
+      } catch {
+        dispose();
+        port2.close();
+      }
+    } catch {
+      channel?.dispose();
+      port1.close();
+      port2.close();
+      // 私有通道不可用时保留普通工作区；禁止回退到明文/公开通道。
+    }
+  }
 
   child.on("exit", (code) => {
     exitedHostProcesses.add(child);

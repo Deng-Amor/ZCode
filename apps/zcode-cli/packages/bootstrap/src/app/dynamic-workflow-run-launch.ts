@@ -81,6 +81,7 @@ export interface CompiledDynamicWorkflowScript {
 }
 
 interface LaunchDynamicWorkflowRunInput {
+  confidentialController?: import("@zcode/contracts").ConfidentialControllerExecutionPort;
   caps: Caps;
   compiled: CompiledDynamicWorkflowScript;
   cwd: string;
@@ -309,6 +310,7 @@ export function launchDynamicWorkflowRun(
       modelRequestAdmission,
     }) => {
       const runtime = deps.createActorRuntime({
+        confidentialController: input.confidentialController,
         runId,
         sessionId,
         actor,

@@ -1463,6 +1463,37 @@ describe("ContextBuilder meta user context", () => {
 // persona 不再整段替换子代理的系统提示：基座段（CLI prefix、安全行、Harness、memory）保留，
 // 交互式身份换成工作流子代理契约，persona 叠加其上；面向「与用户对话」的三段（desktop、
 // Dynamic Behavior、session guidance）跳过。
+describe("startup global system prompt", () => {
+  it.each([
+    {},
+    { customSystemPrompt: "LOCAL_PERSONA" },
+    { workflowActor: { persona: "ACTOR_PERSONA" } },
+  ])("adds the private global section without replacing persona %j", (persona) => {
+    const result = createContextBuilder({
+      workingDirectory: "/workspace",
+      globalSystemPrompt: "GLOBAL_CONTROLLER_SENTINEL",
+      envInfo: {
+        cwd: "/workspace",
+        platform: "linux",
+        shell: "bash",
+        osVersion: "Linux",
+        nodeVersion: "24",
+      },
+      ...persona,
+    }).build();
+    const systems = result.systemMessages.map((message) => String(message.content)).join("\n");
+    expect(systems).toContain("GLOBAL_CONTROLLER_SENTINEL");
+    if ("customSystemPrompt" in persona) expect(systems).toContain("LOCAL_PERSONA");
+    if ("workflowActor" in persona) expect(systems).toContain("ACTOR_PERSONA");
+    expect(result.metaUserAttachments.map((item) => item.content).join("\n")).not.toContain(
+      "GLOBAL_CONTROLLER_SENTINEL",
+    );
+    expect(
+      result.sections.find((section) => section.source === "global_system_prompt")?.preview,
+    ).not.toContain("GLOBAL_CONTROLLER_SENTINEL");
+  });
+});
+
 describe("context builder — workflow actor identity", () => {
   const envInfo = {
     cwd: "/workspace",

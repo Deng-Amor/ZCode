@@ -34,6 +34,7 @@ export async function runScheduledPhase(
     plannerRunner: {
       run: async (input) => {
         const result = await ctx.agentRunner.run({
+          confidentialController: options.confidentialController,
           abortSignal: input.abortSignal,
           activityId: input.activityId,
           cwd: input.cwd,
@@ -61,6 +62,7 @@ export async function runScheduledPhase(
     runner: {
       run: async (input) =>
         ctx.agentRunner.run({
+          confidentialController: options.confidentialController,
           abortSignal: input.abortSignal,
           activityId: input.activityId,
           cwd: input.cwd,

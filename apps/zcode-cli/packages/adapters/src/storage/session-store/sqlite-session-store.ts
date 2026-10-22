@@ -5,6 +5,7 @@ import * as permissionFullAccessRepository from "./repositories/permission-full-
 import { DatabaseSync } from "node:sqlite";
 import type {
   CollaborationMode,
+  ConfidentialControllerBinding,
   ClaimLegacySessionWorkspaceInput,
   RepairLegacyRemoteSessionWorkspaceInput,
   RepairRemoteSessionPathsInput,
@@ -881,6 +882,21 @@ export class SqliteSessionStore
     permission: PermissionRuleset;
   }): Promise<PermissionRuleset> {
     return localSettingsRepository.saveProjectPermission(this.db, input);
+  }
+
+  async getConfidentialControllerBinding(
+    sessionID: SessionId,
+    runKey: string,
+  ): Promise<ConfidentialControllerBinding | null> {
+    return localSettingsRepository.getConfidentialControllerBinding(this.db, sessionID, runKey);
+  }
+
+  async bindConfidentialControllerRelease(
+    sessionID: SessionId,
+    runKey: string,
+    binding: ConfidentialControllerBinding,
+  ): Promise<void> {
+    localSettingsRepository.bindConfidentialControllerRelease(this.db, sessionID, runKey, binding);
   }
 
   getProjectPermissionMode(projectID: ProjectId): CollaborationMode | null {

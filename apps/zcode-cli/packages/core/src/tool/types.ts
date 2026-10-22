@@ -168,6 +168,7 @@ export interface ToolExecutionContext {
   /** Core Server 对前台 child 的 Selection override。 */
   subagentModelOverride?: SubagentRunOptions["modelOverride"];
   skillPort?: SkillPort;
+  activateConfidentialController?: (signal?: AbortSignal) => Promise<void>;
   subagentPort?: SubagentPort;
   coordinatorResponsePort?: CoordinatorResponsePort;
   /** 工作流 actor 提交终态结果并等待引擎裁决的端口；仅在 workflow actor 会话注入。 */

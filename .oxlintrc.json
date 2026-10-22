@@ -13,6 +13,9 @@
         "**/apps/zcode-cli/packages/adapters/src/plugins/marketplace.ts",
         // MCP 连接入口沿用上游存量实现；连接屏障修复不为行数重排整个 adapter。
         "**/apps/zcode-cli/packages/adapters/src/mcp/index.ts",
+        // 流式模型循环为上游存量大文件；本次仅补隐私记录开关，保留800行告警。
+        "**/apps/zcode-cli/packages/adapters/src/model/runner-stream.ts",
+        "src/model/runner-stream.ts",
         "**/apps/zcode-cli/packages/bootstrap/src/plugins.ts",
         "**/apps/zcode-cli/packages/adapters/src/storage/session-store/migrations.ts",
         "**/apps/zcode-cli/packages/adapters/src/storage/session-store/sqlite-session-store.ts",

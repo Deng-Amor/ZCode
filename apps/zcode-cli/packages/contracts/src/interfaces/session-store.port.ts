@@ -1097,6 +1097,16 @@ export interface LocalSettingStorePort {
 }
 
 export interface SessionStorePort {
+  /** Nonsecret immutable release identity; never a content cache or authorization. */
+  getConfidentialControllerBinding?(
+    sessionID: SessionId,
+    runKey: string,
+  ): Promise<import("../model/invocation-context.js").ConfidentialControllerBinding | null>;
+  bindConfidentialControllerRelease?(
+    sessionID: SessionId,
+    runKey: string,
+    binding: import("../model/invocation-context.js").ConfidentialControllerBinding,
+  ): Promise<void>;
   createSession(input: CreateSessionInput): Promise<SessionInfo>;
   /** legacy 兼容原语；V4 stable/compact-edit fork 禁止调用，统一走 commitForkBundle。 */
   createForkedSessionWithMetadata?(

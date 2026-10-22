@@ -5,6 +5,7 @@ import { createNodeExecutionAdapter } from "@zcode/adapters/exec";
 import { createNodeFileSystemAdapter } from "@zcode/adapters/fs";
 import { createNodeWebFetchHttpClientAdapter } from "@zcode/adapters/http";
 import { createNodeSkillAdapter } from "@zcode/adapters/skills";
+import { createControllerSkillPort } from "@zcode/adapters/confidential-controller";
 import type { ConfigResult } from "@zcode/adapters/config";
 import {
   AgentRuntime,
@@ -17,6 +18,7 @@ import {
   type AgentExecutionTelemetryPort,
   type BrowserControlPort,
   type ContextSourcePort,
+  type ConfidentialControllerExecutionPort,
   type FileSystemPort,
   type HttpClientPort,
   type ImageProcessorPort,
@@ -39,7 +41,39 @@ import { collectDisabledPaths } from "../skill-command-overrides.js";
 import { parseProviderQualifiedModelSelection } from "./provider-registry-selection.js";
 import type { ZCodeAppOptions } from "./types.js";
 
+/** One run owns the returned scope. Only nonsecret version identity reaches storage. */
+export async function prepareWorkflowController(input: {
+  factory?: ZCodeAppOptions["createConfidentialControllerScope"];
+  store: SessionStorePort;
+  sessionId: SessionId;
+  kind: "dynamic" | "script" | "expert";
+  runId: string;
+  resume: boolean;
+  sourceScope?: ConfidentialControllerExecutionPort;
+  signal?: AbortSignal;
+}): Promise<ConfidentialControllerExecutionPort | undefined> {
+  if (!input.factory) return input.sourceScope;
+  const { store, signal } = input;
+  if (!store.getConfidentialControllerBinding || !store.bindConfidentialControllerRelease)
+    throw new Error("Workflow controller binding unavailable");
+  const key = `workflow:${input.kind}:${input.runId}`;
+  signal?.throwIfAborted();
+  const restored = await store.getConfidentialControllerBinding(input.sessionId, key);
+  signal?.throwIfAborted();
+  if (input.resume && !restored) throw new Error("Workflow controller binding missing");
+  // 恢复必须使用自己的绑定，新运行只能继承发起时捕获的父scope。
+  const candidate = restored ? input.factory(restored) : input.sourceScope;
+  if (!candidate) throw new Error("请先在父任务中激活总控派单，再启动工作流。");
+  const release = await candidate.use(async () => ({ authorized: true }), { signal });
+  signal?.throwIfAborted();
+  const binding = { version: release.version, digest: release.digest };
+  await store.bindConfidentialControllerRelease(input.sessionId, key, binding);
+  signal?.throwIfAborted();
+  return input.factory(binding);
+}
+
 export interface ScriptWorkflowAgentRuntimeDeps {
+  confidentialController?: ConfidentialControllerExecutionPort;
   agentTelemetry: AgentExecutionTelemetryPort;
   appOptions: ZCodeAppOptions;
   appVersion: string;
@@ -200,8 +234,13 @@ function createRuntimeDeps(
   childSessionId: SessionId,
   clientPortsContext: ChildClientPortsContext,
 ): ConstructorParameters<typeof AgentRuntime>[2] {
+  // 直接恢复脚本工作流也必须先完成父任务授权，缺省端口不能降级为普通执行。
+  if (deps.appOptions.createConfidentialControllerScope && !deps.confidentialController)
+    throw new Error("请先在父任务中激活总控派单，再启动工作流。");
   return {
     agentTelemetry: deps.agentTelemetry,
+    // 所有 actor 共用父任务保护范围，不独立选择 latest 或借用 AsyncLocal 临时状态。
+    confidentialController: deps.confidentialController,
     agentTelemetryCausation: deps.agentTelemetry.captureCausation(),
     // Script workflow child 具有独立生命周期；用 Link 保留发起关系。
     agentTelemetryCausationMode: "linked_root",
@@ -268,7 +307,10 @@ function createRuntimeDeps(
     ...deps.runtime.createChildClientPorts(clientPortsContext),
     permissionService: deps.permissionService,
     sessionStore: deps.sessionStore,
-    skillPort: createWorkflowChildSkillPort(deps),
+    skillPort:
+      deps.appOptions.createConfidentialControllerScope || deps.runtime.getConfidentialController()
+        ? createControllerSkillPort(createWorkflowChildSkillPort(deps))
+        : createWorkflowChildSkillPort(deps),
     traceContext,
   };
 }

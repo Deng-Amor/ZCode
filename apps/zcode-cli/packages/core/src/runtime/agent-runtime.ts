@@ -178,6 +178,13 @@ export class AgentRuntime {
   private browserControlPort?: AgentRuntimeDeps["browserControlPort"];
   /** 模型请求准入端口；随每次模型请求进调用上下文。 */
   private modelRequestAdmission?: AgentRuntimeDeps["modelRequestAdmission"];
+  private confidentialController?: AgentRuntimeDeps["confidentialController"];
+  private confidentialControllerScope?: AgentRuntimeDeps["confidentialController"];
+  private confidentialControllerRunKey?: string;
+  private createConfidentialControllerScope?: AgentRuntimeDeps["createConfidentialControllerScope"];
+  getConfidentialController(): AgentRuntimeDeps["confidentialController"] {
+    return this.confidentialController;
+  }
   private sessionModelSelection: ModelSelection | undefined;
   private messageHistory: MessageHistory;
   private readFileState: ReadFileStateMap;
@@ -323,6 +330,8 @@ export class AgentRuntime {
     this.providerRuntimeHeadersPort = deps.providerRuntimeHeadersPort;
     this.browserControlPort = deps.browserControlPort;
     this.modelRequestAdmission = deps.modelRequestAdmission;
+    this.confidentialController = deps.confidentialController;
+    this.createConfidentialControllerScope = deps.createConfidentialControllerScope;
     configureOffPeakRuntime(
       this as unknown as import("./internal.js").AgentRuntimeInternal,
       deps.onOffPeakLifecycleEvent,

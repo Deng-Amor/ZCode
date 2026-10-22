@@ -100,6 +100,8 @@ export interface ToolExecutorOptions {
   embeddedSearchBackend?: EmbeddedSearchBackend;
   nativeSearchEnhancementsEnabled?: boolean;
   skillPort?: SkillPort;
+  activateConfidentialController?: (signal?: AbortSignal) => Promise<void>;
+  assertControllerReady?: (toolName: string) => void;
   subagentPort?: SubagentPort;
   coordinatorResponsePort?: CoordinatorResponsePort;
   workflowSubmitPort?: WorkflowSubmitPort;
@@ -215,6 +217,8 @@ export interface ToolExecutorDeps {
   embeddedSearchBackend?: EmbeddedSearchBackend;
   nativeSearchEnhancementsEnabled?: boolean;
   skillPort?: SkillPort;
+  activateConfidentialController?: (signal?: AbortSignal) => Promise<void>;
+  assertControllerReady?: (toolName: string) => void;
   subagentPort?: SubagentPort;
   coordinatorResponsePort?: CoordinatorResponsePort;
   workflowSubmitPort?: WorkflowSubmitPort;

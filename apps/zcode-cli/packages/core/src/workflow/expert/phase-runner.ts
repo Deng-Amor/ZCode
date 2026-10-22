@@ -54,6 +54,7 @@ export async function runPhase(
 
   try {
     const result = await ctx.agentRunner.run({
+      confidentialController: options.confidentialController,
       abortSignal: options.abortSignal,
       activityId,
       cwd: options.cwd,

@@ -8,6 +8,7 @@ export function createDesktopPlatform(options: {
   isLocalDevelopmentRuntime: boolean;
 }): IPlatformService {
   return {
+    ccodeAccount: window.zcode.ccodeAccount,
     canSelectFilePath: true,
     canOpenLocalFiles: true,
     pluginSandbox: createDesktopPluginSandboxPlatform(),

@@ -290,6 +290,7 @@ export function createDefaultSubagentPort(
             // 非流式请求里也返回 SSE `data:` 帧，generateText 会按普通 JSON 解析并报
             // Invalid JSON response；继承父配置可让子 agent 与主链路走同一 streamText 语义。
             modelStreaming: this.config.modelStreaming,
+            globalSystemPrompt: this.config.globalSystemPrompt,
             bashTimeoutPolicy: this.config.bashTimeoutPolicy,
             midConversationSystem: this.config.midConversationSystem,
             toolSearch: this.config.toolSearch,
@@ -339,6 +340,7 @@ export function createDefaultSubagentPort(
             // 子 runtime 继承父的模型请求准入端口：subagent 的请求 provider 同样看得见，
             // 它们该与父一样喂治理器信号（父是 observer 则子也是 observer）。
             modelRequestAdmission: this.modelRequestAdmission,
+            confidentialController: this.confidentialController,
             modelFactory: childModelFactory,
             resolveEffectiveModelSelection: deps.resolveEffectiveModelSelection,
             // 子 runtime 自己仍使用 request.sessionId 做事件持久化和 trace 归档；对外阻塞交互

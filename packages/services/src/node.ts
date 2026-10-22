@@ -424,6 +424,7 @@ import { createObservableSettingService } from "./setting/observableSettingServi
 import { createCredentialService } from "./credential/credentialService.js";
 import { createBroadcastService } from "./broadcast/broadcastService.js";
 import { createZCodeAgentService } from "./zcode-agent/zcodeAgentService.js";
+import type { ControllerPrivateChannelFactory } from "./confidential-controller/index.js";
 import type { ZCodeAgentCommandResolver } from "./zcode-agent/zcodeAgentProcessManager.js";
 import { buildAgentTelemetrySpawnEnv } from "./zcode-agent/agentTelemetryEnv.js";
 import { resolveZCodeAgentPresentationSurface } from "./zcode-agent/zcodeAgentPresentationSurface.js";
@@ -1176,6 +1177,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *        用于 BroadcastService 跨窗口中转。传 null 则广播为空操作。
  */
 export function createLocalServices(options: {
+  /** 仅限本地 chat Agent 的专用 IPC，不注册为公共 service。 */
+  createControllerPrivateChannel?: ControllerPrivateChannelFactory;
   /** 已鉴权 Desktop stdio 连接提供的私有回查频道；不作为公共 service 暴露。 */
   topicResourceRelayChannel?: (request: unknown) => IChannel;
   parentPort?: Parameters<typeof createBroadcastService>[0];
@@ -2215,6 +2218,7 @@ export function createLocalServices(options: {
     workspaceIdentity: undefined,
   });
   const zcodeAgentService = createZCodeAgentService({
+    createControllerPrivateChannel: options?.createControllerPrivateChannel,
     prepareProjectExecution,
     prepareSessionCreation: async (target) =>
       (await taskIndexRepo.getProjectRepository()).reserveCreatedTask({

@@ -39,6 +39,9 @@ export function stageAgentBundle({ repoRoot, platformKey, log = console.log }) {
   rmSync(glmDir, { recursive: true, force: true });
   mkdirSync(glmDir, { recursive: true });
   copyFileSync(cliBundlePath, stagedBundlePath);
+  const capabilityName = 'ccode-controller-capability.json';
+  const capabilityPath = resolve(repoRoot, 'apps/zcode-cli/packages/cli/dist', capabilityName);
+  if (existsSync(capabilityPath)) copyFileSync(capabilityPath, resolve(glmDir, capabilityName));
   const meta = {
     runtime: "electron-node",
     entry: "zcode.cjs",

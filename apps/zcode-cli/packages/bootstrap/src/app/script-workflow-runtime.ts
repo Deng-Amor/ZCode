@@ -21,6 +21,7 @@ import {
 } from "./script-workflow-process.js";
 import {
   createScriptWorkflowAgentRuntime,
+  prepareWorkflowController,
   type ScriptWorkflowAgentRuntimeDeps,
 } from "./script-workflow-child-runtime.js";
 import {
@@ -127,6 +128,7 @@ export class ScriptWorkflowRuntime {
     status: ScriptWorkflowRunStatus;
     traceId: string;
   }> {
+    const sourceScope = this.deps.runtime.getConfidentialController();
     await this.deps.prepareUserExecutionBoundary(options);
     const document = await readWorkflowScriptDocument({
       fileSystemPort: this.deps.fileSystemPort,
@@ -146,6 +148,17 @@ export class ScriptWorkflowRuntime {
       store: this.store(),
       workingDirectory: this.deps.workingDirectory,
     });
+    if (run.parentSessionId !== this.deps.sessionId) throw new Error("Workflow parent mismatch");
+    const confidentialController = await prepareWorkflowController({
+      factory: this.deps.appOptions.createConfidentialControllerScope,
+      store: this.deps.sessionStore,
+      sessionId: this.deps.sessionId,
+      kind: "script",
+      runId: run.id,
+      resume: input.resumeFromRunId !== undefined,
+      sourceScope,
+      signal: options?.abortSignal,
+    });
     await this.appendEvent(run.id, "workflow_started", { scriptPath: document.path });
 
     try {
@@ -159,7 +172,8 @@ export class ScriptWorkflowRuntime {
         budgetTotal: run.budgetTotal,
         document,
         handleEvent: (event) => this.handleChildEvent(run.id, event.type, event.payload),
-        handleRequest: (request) => this.handleChildRequest(run, request, options),
+        handleRequest: (request) =>
+          this.handleChildRequest(run, request, options, confidentialController),
         signal: options?.abortSignal,
         workingDirectory: this.deps.workingDirectory,
       });
@@ -215,9 +229,15 @@ export class ScriptWorkflowRuntime {
     run: ScriptWorkflowRunRecord,
     request: ScriptWorkflowChildRequest,
     options?: ScriptWorkflowRunOptions,
+    confidentialController?: import("@zcode/contracts").ConfidentialControllerExecutionPort,
   ): Promise<unknown> {
     if (request.type === "agent") {
-      return this.runAgent(run, WorkflowAgentCallInputSchema.parse(request.payload), options);
+      return this.runAgent(
+        run,
+        WorkflowAgentCallInputSchema.parse(request.payload),
+        options,
+        confidentialController,
+      );
     }
     if (request.type === "workflow") {
       throw new Error("Nested workflow() is reserved for a later workflow runtime version.");
@@ -239,6 +259,7 @@ export class ScriptWorkflowRuntime {
     run: ScriptWorkflowRunRecord,
     input: WorkflowAgentCallInput,
     options?: ScriptWorkflowRunOptions,
+    confidentialController?: import("@zcode/contracts").ConfidentialControllerExecutionPort,
   ): Promise<unknown> {
     if (this.callIndex >= MAX_WORKFLOW_AGENT_CALLS) {
       throw new Error(`Workflow agent call limit exceeded: ${MAX_WORKFLOW_AGENT_CALLS}`);
@@ -270,7 +291,9 @@ export class ScriptWorkflowRuntime {
       runId: run.id,
       type: "agent",
     });
-    return this.limiter.run(() => this.runLiveAgent(run, activity, input, options));
+    return this.limiter.run(() =>
+      this.runLiveAgent(run, activity, input, options, confidentialController),
+    );
   }
 
   private async runLiveAgent(
@@ -278,6 +301,7 @@ export class ScriptWorkflowRuntime {
     activity: ScriptWorkflowActivityRecord,
     input: WorkflowAgentCallInput,
     options?: ScriptWorkflowRunOptions,
+    confidentialController?: import("@zcode/contracts").ConfidentialControllerExecutionPort,
   ): Promise<unknown> {
     if (input.opts?.isolation === "worktree") {
       throw new Error("workflow agent isolation 'worktree' is not implemented yet.");
@@ -294,7 +318,7 @@ export class ScriptWorkflowRuntime {
     });
     const childRuntime = createScriptWorkflowAgentRuntime({
       childSessionId,
-      deps: this.deps,
+      deps: { ...this.deps, confidentialController },
       request: input,
       traceContext: childTraceContext,
     });

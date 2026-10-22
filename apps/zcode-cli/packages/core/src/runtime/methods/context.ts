@@ -127,6 +127,7 @@ export function createContextBuilderFromSnapshot(
   if (this.config.subagentContext) {
     return createSubagentContextBuilder({
       agentPrompt: this.config.subagentContext.agentPrompt,
+      globalSystemPrompt: this.config.globalSystemPrompt,
       currentDate: snapshot.currentDate,
       envInfo,
       model: options.model,
@@ -153,6 +154,7 @@ export function createContextBuilderFromSnapshot(
     embeddedSearchEnabled: resolveRuntimeEmbeddedSearchEnabled(this),
     skillMetadataBudget: this.config.skillMetadataBudget,
     customSystemPrompt: this.config.systemPrompt,
+    globalSystemPrompt: this.config.globalSystemPrompt,
     workflowActor: this.config.workflowActor,
     language: this.config.language,
     outputStyle: this.config.outputStyle,
@@ -319,7 +321,7 @@ export function initializeMessageHistoryFromContext(
       confidence: "medium",
       tokenizer: "zcode.estimateTokens.v1",
       preview: s.preview,
-      content: s.content,
+      content: s.source === "global_system_prompt" ? undefined : s.content,
     })),
   });
 }

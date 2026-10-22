@@ -1,5 +1,5 @@
 import type { Model, ModelInputMessage } from "@zcode/contracts";
-import { ContextBuilder } from "../context/builder.js";
+import { ContextBuilder, buildGlobalSystemPromptSection } from "../context/builder.js";
 import {
   buildContextMetaUserBody,
   buildSkillsMetaUserBody,
@@ -17,6 +17,7 @@ import { buildSubagentCommonNotes, buildSubagentEnvironmentContext } from "./sys
 
 export interface SubagentContextBuilderConfig {
   agentPrompt: string;
+  globalSystemPrompt?: string;
   currentDate?: string;
   envInfo: EnvInfo;
   model?: Model;
@@ -123,6 +124,9 @@ function buildSubagentContextSections(config: SubagentContextBuilderConfig): Con
       }),
     );
   }
+
+  const globalSection = buildGlobalSystemPromptSection(config.globalSystemPrompt);
+  if (globalSection) sections.push(globalSection);
 
   sections.push(
     createSubagentSection({

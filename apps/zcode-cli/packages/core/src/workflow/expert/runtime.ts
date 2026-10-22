@@ -23,12 +23,18 @@ import type {
 export class ExpertWorkflowRuntime {
   private readonly ctx: ExpertWorkflowRuntimeContext;
 
-  constructor(deps: ExpertWorkflowRuntimeDeps) {
+  constructor(private readonly deps: ExpertWorkflowRuntimeDeps) {
     this.ctx = new ExpertWorkflowRuntimeContext(deps);
   }
 
   async start(options: ExpertWorkflowRunOptions): Promise<ExpertWorkflowCommandResult> {
     const snapshot = this.ctx.createInitialSnapshot(options);
+    const confidentialController = await this.deps.prepareController?.(
+      snapshot,
+      false,
+      options.abortSignal,
+    );
+    options = { ...options, confidentialController };
     await this.ctx.store.writeSnapshot(snapshot, { signal: options.abortSignal });
     await this.ctx.writeInitialGraph(snapshot, options.abortSignal);
     await this.ctx.appendEvent(snapshot.runId, "run_started", {
@@ -49,6 +55,12 @@ export class ExpertWorkflowRuntime {
 
   async startBackground(options: ExpertWorkflowRunOptions): Promise<ExpertWorkflowCommandResult> {
     const snapshot = this.ctx.createInitialSnapshot(options);
+    const confidentialController = await this.deps.prepareController?.(
+      snapshot,
+      false,
+      options.abortSignal,
+    );
+    options = { ...options, confidentialController };
     await this.ctx.store.writeSnapshot(snapshot, { signal: options.abortSignal });
     await this.ctx.writeInitialGraph(snapshot, options.abortSignal);
     await this.ctx.appendEvent(snapshot.runId, "run_started", {
@@ -108,31 +120,43 @@ export class ExpertWorkflowRuntime {
       };
     }
 
-    const resumeRepair = reconcileWorkflowSnapshotForResume(snapshot, {
-      timestamp: this.ctx.timestamp(),
-    });
-    const resumed = {
-      ...resumeRepair.snapshot,
-      status: "running" as const,
-      updatedAt: this.ctx.timestamp(),
-    };
-    await this.ctx.store.writeSnapshot(resumed, { signal: options.abortSignal });
-    await this.ctx.appendLifecycleGraphChanges(
-      resumed,
-      resumeRepair.nodeChanges,
-      options.abortSignal,
-    );
-    if (resumeRepair.changed) {
-      await this.ctx.appendEvent(resumed.runId, "graph_updated", {
-        message: "Workflow resume repaired stale active work.",
-        payload: lifecyclePayload(resumeRepair),
-        signal: options.abortSignal,
-      });
-    }
-
-    const runAbort = this.ctx.registerRunAbortSignal(resumed.runId, options.abortSignal);
+    const runAbort = this.ctx.registerRunAbortSignal(snapshot.runId, options.abortSignal);
+    options = { ...options, abortSignal: runAbort.signal };
     try {
+      const confidentialController = await this.deps.prepareController?.(
+        snapshot,
+        true,
+        options.abortSignal,
+      );
+      const current = await this.ctx.store.readRun(snapshot.runId, { signal: runAbort.signal });
+      runAbort.signal.throwIfAborted();
+      if (!current || JSON.stringify(current) !== JSON.stringify(snapshot))
+        throw new Error("Workflow changed during authorization");
+
+      const resumeRepair = reconcileWorkflowSnapshotForResume(snapshot, {
+        timestamp: this.ctx.timestamp(),
+      });
+      const resumed = {
+        ...resumeRepair.snapshot,
+        status: "running" as const,
+        updatedAt: this.ctx.timestamp(),
+      };
+      await this.ctx.store.writeSnapshot(resumed, { signal: options.abortSignal });
+      await this.ctx.appendLifecycleGraphChanges(
+        resumed,
+        resumeRepair.nodeChanges,
+        options.abortSignal,
+      );
+      if (resumeRepair.changed) {
+        await this.ctx.appendEvent(resumed.runId, "graph_updated", {
+          message: "Workflow resume repaired stale active work.",
+          payload: lifecyclePayload(resumeRepair),
+          signal: options.abortSignal,
+        });
+      }
+
       return await continueRun(this.ctx, resumed, {
+        confidentialController,
         abortSignal: runAbort.signal,
         cwd: resumed.cwd,
         onEvent: options.onEvent,
@@ -179,28 +203,40 @@ export class ExpertWorkflowRuntime {
       };
     }
 
-    const prepared = prepareSnapshotForRetry(this.ctx, snapshot, options);
-    await this.ctx.store.writeSnapshot(prepared.snapshot, { signal: options.abortSignal });
-    await this.ctx.appendLifecycleGraphChanges(
-      prepared.snapshot,
-      prepared.nodeChanges,
-      options.abortSignal,
-    );
-    await this.ctx.appendEvent(prepared.snapshot.runId, "workflow_retry_started", {
-      message: `${this.ctx.definition.title} retry started.`,
-      payload: {
-        activityId: options.activityId,
-        nodeId: options.nodeId,
-        phase: options.phase ?? prepared.snapshot.currentPhase,
-        resetNodeIds: prepared.nodeChanges.map((change) => change.nodeId),
-      },
-      phase: options.phase ?? prepared.snapshot.currentPhase,
-      signal: options.abortSignal,
-    });
-
-    const runAbort = this.ctx.registerRunAbortSignal(prepared.snapshot.runId, options.abortSignal);
+    const runAbort = this.ctx.registerRunAbortSignal(snapshot.runId, options.abortSignal);
+    options = { ...options, abortSignal: runAbort.signal };
     try {
+      const confidentialController = await this.deps.prepareController?.(
+        snapshot,
+        true,
+        options.abortSignal,
+      );
+      const current = await this.ctx.store.readRun(snapshot.runId, { signal: runAbort.signal });
+      runAbort.signal.throwIfAborted();
+      if (!current || JSON.stringify(current) !== JSON.stringify(snapshot))
+        throw new Error("Workflow changed during authorization");
+
+      const prepared = prepareSnapshotForRetry(this.ctx, snapshot, options);
+      await this.ctx.store.writeSnapshot(prepared.snapshot, { signal: options.abortSignal });
+      await this.ctx.appendLifecycleGraphChanges(
+        prepared.snapshot,
+        prepared.nodeChanges,
+        options.abortSignal,
+      );
+      await this.ctx.appendEvent(prepared.snapshot.runId, "workflow_retry_started", {
+        message: `${this.ctx.definition.title} retry started.`,
+        payload: {
+          activityId: options.activityId,
+          nodeId: options.nodeId,
+          phase: options.phase ?? prepared.snapshot.currentPhase,
+          resetNodeIds: prepared.nodeChanges.map((change) => change.nodeId),
+        },
+        phase: options.phase ?? prepared.snapshot.currentPhase,
+        signal: options.abortSignal,
+      });
+
       return await continueRun(this.ctx, prepared.snapshot, {
+        confidentialController,
         abortSignal: runAbort.signal,
         cwd: prepared.snapshot.cwd,
         onEvent: options.onEvent,
@@ -220,6 +256,7 @@ export class ExpertWorkflowRuntime {
         response: "No expert workflow found.",
       };
     }
+    this.ctx.activeRunAbortControllers.get(snapshot.runId)?.abort(new Error("Workflow cancelled"));
     if (isTerminalStatus(snapshot.status)) {
       return {
         response: formatExpertWorkflowStatus(snapshot),
@@ -244,7 +281,6 @@ export class ExpertWorkflowRuntime {
       payload: lifecyclePayload(cancelRepair),
       signal: options.abortSignal,
     });
-    this.ctx.activeRunAbortControllers.get(snapshot.runId)?.abort(new Error("Workflow cancelled"));
     return {
       response: formatExpertWorkflowStatus(cancelled),
       runId: cancelled.runId,

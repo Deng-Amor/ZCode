@@ -273,6 +273,16 @@ async function executeToolCallImpl(
       return result;
     }
 
+    try {
+      deps.assertControllerReady?.(canonicalToolCall.name);
+    } catch {
+      // 激活门必须先于任何前置hook；拒绝时直接结算，不能触发失败hook的副作用。
+      const result = createPermissionErrorResult(canonicalToolCall, '请先调用 Skill 总控派单完成任务授权，再执行工作工具。', { toolName: canonicalToolCall.name });
+      await emitToolCallError(deps, canonicalToolCall.id, traceContext, turnId, result.error, undefined, pluginId);
+      telemetry?.finishFailed('validation', 'parse', result.error);
+      return result;
+    }
+
     const toolInputValidation = entry.validateInput?.(executionInput, {
       runtimeTaskRegistry: deps.runtimeTaskRegistry,
     });
@@ -477,6 +487,7 @@ async function executeToolCallImpl(
     let failureStage: "handler" | "serialize" | "post_hook" = "handler";
 
     try {
+      deps.assertControllerReady?.(canonicalToolCall.name);
       const model = options?.model ?? deps.model;
       const embeddedSearchDecision = resolveEmbeddedSearchBranchCapability({
         bashAvailable: deps.registry.has("Bash"),
@@ -513,6 +524,7 @@ async function executeToolCallImpl(
           ...(deps.nativeSearchEnhancementsEnabled === false ? { findAndGrepEnabled: false } : {}),
         },
         skillPort: deps.skillPort,
+        activateConfidentialController: deps.activateConfidentialController,
         subagentPort: deps.subagentPort,
         coordinatorResponsePort: deps.coordinatorResponsePort,
         workflowSubmitPort: deps.workflowSubmitPort,

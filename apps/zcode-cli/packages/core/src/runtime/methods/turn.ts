@@ -492,6 +492,21 @@ export async function executeTurnCommand(
       if (startedTarget?.status !== "active") {
         startedTarget = null;
       }
+      if (this.createConfidentialControllerScope && !this.config.parentSessionId) {
+        const external = options?.inputSource === undefined;
+        const targetId = options?.targetId ?? startedTarget?.targetID;
+        const runKey =
+          targetId !== undefined
+            ? `target:${targetId}`
+            : external
+              ? options?.inputId !== undefined
+                ? `input:${options.inputId}`
+                : `turn:${turnId}`
+              : this.confidentialControllerRunKey;
+        // 总控在首次模型调用前由应用级内存 scope 自动接入。新外部请求不能再把它
+        // 重置成“等待模型调用 Skill”的状态；runKey 只保留给旧会话绑定兼容逻辑。
+        this.confidentialControllerRunKey = runKey;
+      }
       userMessageId =
         options?.skipInputRecord === true
           ? (options.recordedInputMessageId ?? createMessageId())

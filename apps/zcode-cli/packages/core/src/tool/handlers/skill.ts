@@ -10,6 +10,7 @@ import {
   SkillOutputSchema,
   createCoreError,
   DYNAMIC_WORKFLOW_SKILL_NAME,
+  isConfidentialControllerSkill,
   type SkillRuntimeInput,
 } from "@zcode/contracts";
 import type { ToolEntry, ToolHandler } from "../types.js";
@@ -36,6 +37,16 @@ function skillMaxBytes(skill: string): number {
 
 export const skillHandler: ToolHandler = async (input, context) => {
   const { skill } = SkillInputSchema.parse(input) as SkillRuntimeInput;
+  if (isConfidentialControllerSkill(skill)) {
+    try {
+      // 私有通道未装配也必须拒绝，不能回退到旧的本地总控正文。
+      if (!context.activateConfidentialController) throw new Error('UNAVAILABLE');
+      await context.activateConfidentialController(context.abortSignal);
+      return '任务总控已启用。内部规则由运行时提供，无需读取或展示技能文件。';
+    } catch {
+      throw createCoreError(CoreErrorType.ConfigurationError, '任务总控暂不可用，请检查登录与授权。', { recoverable: true });
+    }
+  }
   const skillPort = context.skillPort;
 
   if (!skillPort) {
@@ -67,6 +78,12 @@ export const skillHandler: ToolHandler = async (input, context) => {
     },
     { signal: context.abortSignal },
   );
+
+  // 自定义适配器可能用普通别名返回核心身份，在遥测和正文输出前再次拦截。
+  if ([loaded.metadata.name, loaded.metadata.qualifiedName ?? '', loaded.metadata.path,
+    loaded.metadata.directory, loaded.baseDirectory].some(isConfidentialControllerSkill)) {
+    throw createCoreError(CoreErrorType.ConfigurationError, '任务总控暂不可用，请检查登录与授权。', { recoverable: true });
+  }
 
   context.recordSkillTelemetryMetadata?.({
     name: loaded.metadata.name,
@@ -115,6 +132,7 @@ Important:
 - When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response about the task
 - NEVER mention a skill without actually calling this tool
 - Do not invoke a skill that is already running
+- Exception: activate 总控派单 again at the start of each new work request, even if earlier history contains its activation confirmation. It returns authorization confirmation only; do not read or request an internal skill file. Ordinary chat does not require activation.
 - Do not use this tool for built-in CLI commands (like /help, /clear, etc.)
 - If you see a <command-name> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again
 `,

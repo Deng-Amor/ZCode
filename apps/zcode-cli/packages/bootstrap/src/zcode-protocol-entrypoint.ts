@@ -277,7 +277,18 @@ export async function runZCodeProtocolAgent(
       createZCodeApp: (appOptions = {}) =>
         createZCodeApp({
           ...applyProtocolProviderRegistry(
-            applyProtocolPresentationSurface(appOptions, presentationSurface),
+            applyProtocolPresentationSurface(
+              {
+                ...appOptions,
+                runtimeConfig: {
+                  ...appOptions.runtimeConfig,
+                  ...(options.globalSystemPrompt
+                    ? { globalSystemPrompt: options.globalSystemPrompt }
+                    : {}),
+                },
+              },
+              presentationSurface,
+            ),
             activeProviderRegistryRuntime.runtime.registryService,
             activeProviderRegistryRuntime.configuredDefaultModelSelection,
           ),
@@ -306,6 +317,7 @@ export async function runZCodeProtocolAgent(
             : {}),
           providerEndpointRoutingPort,
           sourceTitle: "electron",
+          createConfidentialControllerScope: options.createConfidentialControllerScope,
           onToolExecResource: (params) =>
             connection.send({ method: zcodeProtocolNotifications.toolExecResource, params }),
         }),

@@ -196,6 +196,11 @@ export type ServiceChannelName = (typeof ServiceChannels)[keyof typeof ServiceCh
 
 /** Electron IPC 频道名。仅在 preload ↔ main 之间使用。 */
 export const PlatformChannels = {
+  CcodeAccountState: "ccode:account-state",
+  CcodeAccountChanged: "ccode:account-changed",
+  CcodeAccountTenants: "ccode:account-tenants",
+  CcodeAccountLogin: "ccode:account-login",
+  CcodeAccountLogout: "ccode:account-logout",
   /** renderer → main：释放插件 UI 沙箱（关闭 ports、撤 protocol handler、清 partition） */
   PluginSandboxDispose: "zcode:plugin-sandbox-dispose",
   PluginSandboxCopyImage: "zcode:plugin-sandbox-copy-image",
@@ -602,6 +607,8 @@ export const ZCODE_RPC_HOST_CAPABILITY_HEADER = "x-zcode-rpc-host-capability";
 
 /** main → host process 的初始化消息类型 */
 export const HostMessageTypes = {
+  /** Main → Host: transfers exactly one private port, never carries rule contents. */
+  ConfidentialControllerPort: "ccode-confidential-controller-port",
   /** main → Host：准备手机项目目录，只复用已在线物理 Source。 */
   PrepareProjectWorkspace: "prepare-project-workspace",
   DatabaseStartupControl: "database-startup-control",

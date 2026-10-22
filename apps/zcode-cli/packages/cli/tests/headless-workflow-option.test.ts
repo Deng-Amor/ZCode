@@ -103,6 +103,21 @@ const PAIRS = {
   alwaysOn: { enabled: true, onDemand: false },
 } as const;
 
+test("stdio forwards trusted startup global prompt without execution scopes", async () => {
+  const h = harness(["app-server", "--stdio"]);
+  h.deps.globalSystemPrompt = "SYNTHETIC_STARTUP_GLOBAL_RULE";
+  let received = false;
+  h.deps.runZCodeProtocolAgent = async (options) => {
+    assert.equal(options.globalSystemPrompt, h.deps.globalSystemPrompt);
+    assert.equal(options.createConfidentialControllerScope, undefined);
+    received = true;
+  };
+  assert.equal(await run(h.ctx, h.deps), 0, h.stderr());
+  assert.equal(received, true);
+  assert.equal(h.stdout().includes(h.deps.globalSystemPrompt), false);
+  assert.equal(h.stderr().includes(h.deps.globalSystemPrompt), false);
+});
+
 function assertPair(options: ZCodeAppOptions, mode: keyof typeof PAIRS) {
   assert.equal(options.runtimeConfig?.dynamicWorkflowEnabled, PAIRS[mode].enabled);
   assert.equal(options.runtimeConfig?.dynamicWorkflowToolsOnDemand, PAIRS[mode].onDemand);

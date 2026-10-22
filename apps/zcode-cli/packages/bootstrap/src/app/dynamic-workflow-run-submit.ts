@@ -61,6 +61,8 @@ import { createWorkflowRunControl } from "./workflow-run-control.js";
  * 路径上按当下并发探测算出的上界（resume 沿用 journal 记录里的 caps，不经它）。
  */
 export interface DynamicWorkflowRunEntryContext {
+  assertOpen: () => void;
+  preparingRuns: Map<string, AbortController>;
   deps: DynamicWorkflowRunServiceDeps;
   runs: Map<string, RunRegistryEntry>;
   escalations: WorkflowEscalationRegistry;
@@ -81,8 +83,13 @@ export async function submitDynamicWorkflowRun(
   ctx: DynamicWorkflowRunEntryContext,
   request: DynamicWorkflowRunSubmitRequest,
 ): Promise<DynamicWorkflowRunSubmitResult> {
-  const runId = startNewRun(ctx, {
-    runId: mintRunId(),
+  if (request.parentSessionId !== undefined && request.parentSessionId !== ctx.deps.parentSessionId)
+    throw new Error("Workflow parent mismatch");
+  const runId = mintRunId();
+  const confidentialController = await ctx.deps.prepareController?.({ runId, resume: false });
+  startNewRun(ctx, {
+    runId,
+    confidentialController,
     scriptText: request.scriptText,
     cwd: request.cwd,
     ...(request.name === undefined ? {} : { name: request.name }),
@@ -124,6 +131,12 @@ export async function amendDynamicWorkflowRun(
   request: DynamicWorkflowRunAmendRequest,
 ): Promise<DynamicWorkflowRunAmendResult> {
   const { deps, runs } = ctx;
+  if (request.parentSessionId !== undefined && request.parentSessionId !== deps.parentSessionId)
+    throw new Error("Workflow parent mismatch");
+  const original = deps.journal.getRun(request.predecessorRunId);
+  if (original === undefined) return { ok: false, reason: "run_not_found" };
+  if (original.parentSessionId !== deps.parentSessionId)
+    throw new Error("Workflow parent mismatch");
   const preflight = preflightAmendImport(deps.journal, request.predecessorRunId);
   if (!preflight.ok) {
     deps.logger?.info?.("Dynamic workflow amend refused", {
@@ -136,12 +149,17 @@ export async function amendDynamicWorkflowRun(
   }
   const predecessor = preflight.run;
   const runId = mintRunId();
+  const confidentialController = await deps.prepareController?.({ runId, resume: false });
+  ctx.assertOpen();
 
   // 在飞判定看**本进程注册表**而不是 journal 状态：journal 说 running 而注册表里没有它，是别的
   // 进程（或死进程）的 run，本 service 停不了也等不到——按已结算处理，让导入构建的终态门说话
   // （非终态即抛，见下）。
   const live = runs.get(request.predecessorRunId);
   let supersededRunId: string | undefined;
+  const current = deps.journal.getRun(request.predecessorRunId);
+  if (current === undefined) return { ok: false, reason: "run_not_found" };
+  if (current.parentSessionId !== deps.parentSessionId) throw new Error("Workflow parent mismatch");
   if (live !== undefined && live.terminal === undefined) {
     live.controller.abort({ superseded: runId });
     // 等前驱自己的结算 promise（与 waitForTask 同一个 promise；trackSettlement 保证它永不 reject）。
@@ -203,6 +221,7 @@ export async function amendDynamicWorkflowRun(
       : undefined;
 
   startNewRun(ctx, {
+    confidentialController,
     runId,
     scriptText: request.scriptText,
     cwd: request.cwd,
@@ -239,6 +258,7 @@ export async function amendDynamicWorkflowRun(
 }
 
 interface StartNewRunInput {
+  confidentialController?: import("@zcode/contracts").ConfidentialControllerExecutionPort;
   runId: string;
   scriptText: string;
   cwd: string;
@@ -279,6 +299,7 @@ interface StartNewRunInput {
  * 返回 runId（同步：注册表条目在本函数返回前就已存在，见下面的注释）。
  */
 function startNewRun(ctx: DynamicWorkflowRunEntryContext, input: StartNewRunInput): string {
+  ctx.assertOpen();
   const { deps, runs, escalations } = ctx;
   const { imported, runId } = input;
   const compiled = compileOnce(input.scriptText);
@@ -378,6 +399,7 @@ function startNewRun(ctx: DynamicWorkflowRunEntryContext, input: StartNewRunInpu
     runId,
     entry,
     launchDynamicWorkflowRun({
+      confidentialController: input.confidentialController,
       caps,
       compiled,
       cwd: input.cwd,
@@ -425,9 +447,25 @@ export async function resumeDynamicWorkflowRun(
   ctx: DynamicWorkflowRunEntryContext,
   runId: string,
 ): Promise<DynamicWorkflowRunResumeResult> {
+  if (ctx.preparingRuns.has(runId)) return { ok: false, reason: "already_running" };
+  const controller = new AbortController();
+  ctx.preparingRuns.set(runId, controller);
+  try {
+    return await resumePreparedDynamicWorkflowRun(ctx, runId, controller);
+  } finally {
+    if (ctx.preparingRuns.get(runId) === controller) ctx.preparingRuns.delete(runId);
+  }
+}
+
+async function resumePreparedDynamicWorkflowRun(
+  ctx: DynamicWorkflowRunEntryContext,
+  runId: string,
+  controller: AbortController,
+): Promise<DynamicWorkflowRunResumeResult> {
   const { deps, runs, escalations } = ctx;
   const record = deps.journal.getRun(runId);
   if (record === undefined) return { ok: false, reason: "not_found" };
+  if (record.parentSessionId !== deps.parentSessionId) throw new Error("Workflow parent mismatch");
   // in-process 在飞的同 runId：journal 状态是 running，本就不可恢复；单列 reason 是
   // 因为它与「不可恢复的终态」对调用方是不同的动作（等它结算 vs 放弃）。
   const live = runs.get(runId);
@@ -441,6 +479,11 @@ export async function resumeDynamicWorkflowRun(
   if (!isResumableRecord(record)) return { ok: false, reason: "not_resumable" };
   // scriptText 落库始于 workflow-live-run；更早的记录没有可重跑的脚本。
   if (record.scriptText === undefined) return { ok: false, reason: "script_missing" };
+  const confidentialController = await deps.prepareController?.({
+    runId,
+    resume: true,
+    signal: controller.signal,
+  });
 
   // 老 run 的 journal 原文是按**当时**的 facade 写的，重构后
   // 可能不再通过类型检查。compileOnce 对脏脚本是硬失败（那是接线错误的通道），resume 撞上它却是
@@ -495,12 +538,25 @@ export async function resumeDynamicWorkflowRun(
 
   // 替换注册表条目：同 runId、新 AbortController、新结算 promise——cancel 从此恢复可用。
   // 必须先于 launch（文件头不变式 5：条目是 watcher 的前提）。
+  ctx.assertOpen();
+  controller.signal.throwIfAborted();
+  const currentLive = runs.get(runId);
+  if (currentLive && currentLive.terminal === undefined)
+    return { ok: false, reason: "already_running" };
+  const currentRecord = deps.journal.getRun(runId);
+  if (currentRecord !== undefined) {
+    if (currentRecord.parentSessionId !== deps.parentSessionId)
+      throw new Error("Workflow parent mismatch");
+    if (currentRecord.status === "stopped" && currentRecord.stopReason === "superseded")
+      return { ok: false, reason: "superseded" };
+  }
+  if (!currentRecord || JSON.stringify(currentRecord) !== JSON.stringify(record))
+    return { ok: false, reason: "not_resumable" };
   const resumedSubagentModel = readRunSubagentModel(deps.journal, runId);
   const resumedModelBindings = readRunModelBindings(deps.journal, runId);
   const resumedScriptPath = readRunScriptPath(deps.journal, runId);
   // 此刻生效的阶段表：补全过就是最后一条 `hole-filled` 上的，否则是 `run-launched` 的声明表。
   const resumedPhaseNames = phaseNamesFromEvents(readRunHoleEvents(deps.journal, runId));
-  const controller = new AbortController();
   // 与 submit 路同规：新条目 = 新 AbortController + 新控制面。上一世的句柄绑的是已经结算的那个
   // 引擎，留着它会让 retune 对一个死引擎说话。
   const control = createWorkflowRunControl();
@@ -539,6 +595,7 @@ export async function resumeDynamicWorkflowRun(
     runId,
     entry,
     launchDynamicWorkflowRun({
+      confidentialController,
       holeTypeOf: (siteId) => entry.holes?.find((hole) => hole.siteId === siteId)?.type,
       // caps 沿用 journal 记录：spentTokens 是对着这套 caps 累计的，
       // 重算等于悄悄挪门柱。

@@ -45,7 +45,13 @@ async function readRequestBody(
 }
 
 function parseJsonObject(body: string): JsonObject {
-  const parsed: unknown = JSON.parse(body);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    // JSON.parse 的原始错误可能摘录请求正文，不能进入模型失败日志或界面。
+    throw new Error("Model option maps require valid JSON.");
+  }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Model option maps require a JSON object request body.");
   }

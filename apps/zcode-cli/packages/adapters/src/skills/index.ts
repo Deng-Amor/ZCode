@@ -5,6 +5,8 @@
 import { realpathSync } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { verifyManagedSkillBundle, type ManagedSkillTrust } from "@zcode/shared/managed-skills";
+import { isConfidentialControllerSkill } from "@zcode/contracts";
 import type {
   SkillContent,
   SkillDiagnostic,
@@ -26,6 +28,7 @@ const SAFE_FRONTMATTER_KEYS = new Set([
   "metadata",
 ]);
 const DEFAULT_MAX_SKILL_BYTES = 100_000;
+const MAX_MANAGED_CONTENT_BYTES = 200_000;
 const MAX_PLUGIN_MANIFEST_SEARCH_DEPTH = 5;
 const PLUGIN_MANIFEST_RELATIVE_PATHS = [
   ".zcode-plugin/plugin.json",
@@ -35,16 +38,52 @@ const PLUGIN_MANIFEST_RELATIVE_PATHS = [
 ] as const;
 
 export interface NodeSkillAdapterOptions extends SkillRootResolutionOptions {
+  /**
+   * 仅由可信部署注入，普通配置、frontmatter 和插件不得构造此策略。
+   * name/skillId 为不含 /、\、: 的单段标识，不接受限定名。
+   */
+  managedSkills?: readonly { trust: ManagedSkillTrust; bundle: unknown }[];
   // 被禁用的 SKILL.md 绝对路径集合（来自 config.json 的 skill.<path>.enable=false）。
   // 命中的 skill 在发现阶段直接剔除，使 discover/load/inspect 全链路保持一致。
   disabledPaths?: Iterable<string>;
 }
 
 export class NodeSkillAdapter implements SkillPort {
+  private readonly managedSkills: readonly ManagedSkillSnapshot[];
+  private readonly reservedIdentities = new Set<string>();
   private readonly disabledPaths: ReadonlySet<string>;
   private readonly pluginNameBySkillRoot = new Map<string, Promise<string | undefined>>();
 
   constructor(private readonly options: NodeSkillAdapterOptions = {}) {
+    this.managedSkills = (options.managedSkills ?? []).map(({ trust, bundle }) => {
+      if (
+        !trust ||
+        typeof trust.name !== "string" ||
+        typeof trust.skillId !== "string" ||
+        !trust.name.trim() ||
+        !trust.skillId.trim() ||
+        /[\\/:]/.test(trust.name) ||
+        /[\\/:]/.test(trust.skillId)
+      ) {
+        // 多段保留身份会绕过普通限定名的逐段匹配；适配器仅接受单段身份，非法策略直接拒绝构造。
+        throw new Error("Invalid managed skill identity");
+      }
+      // 总控仅由中台私有通道提供，旧受管包也不能重新引入核心正文。
+      if ([trust.name, trust.skillId].some(isConfidentialControllerSkill)) {
+        throw new Error("Controller skill requires private channel");
+      }
+      const identities = new Set([
+        normalizeSkillIdentity(trust.name),
+        normalizeSkillIdentity(trust.skillId),
+      ]);
+      for (const identity of identities) {
+        if (this.reservedIdentities.has(identity))
+          throw new Error(`Duplicate managed skill identity: ${identity}`);
+        this.reservedIdentities.add(identity);
+      }
+      // 在构造时验签并复制为不可变字符串；之后调用者修改策略或包不能更换会话版本。
+      return snapshotManagedSkill({ ...trust }, bundle);
+    });
     this.disabledPaths = new Set(
       Array.from(options.disabledPaths ?? []).flatMap((path) => {
         const resolvedPath = resolve(path);
@@ -68,13 +107,42 @@ export class NodeSkillAdapter implements SkillPort {
     const selected = new Map<string, SkillMetadata>();
     let totalDiscovered = 0;
 
+    for (const managed of this.managedSkills) {
+      if (!managed.content) {
+        diagnostics.push({
+          code: "skill_read_failed",
+          severity: "error",
+          skillName: managed.name,
+          message: `Managed skill unavailable: ${managed.name}: ${managed.error}`,
+        });
+        continue;
+      }
+      const metadata = structuredClone(managed.content.metadata);
+      selected.set(metadata.path, metadata);
+      totalDiscovered++;
+    }
+
     for (const root of roots.toSorted((a, b) => a.priority - b.priority)) {
       throwIfAborted(options);
       const skillPaths = await this.skillFilesUnderRoot(root, diagnostics);
       for (const path of skillPaths) {
         throwIfAborted(options);
+        if (isConfidentialControllerSkill(path)) continue;
         const parsed = await this.parseSkill(path, root, diagnostics);
         if (!parsed) continue;
+        if (
+          this.isReservedIdentity(parsed.name) ||
+          this.isReservedIdentity(parsed.qualifiedName ?? "")
+        ) {
+          diagnostics.push({
+            code: "skill_duplicate_name",
+            severity: "error",
+            path: parsed.path,
+            skillName: parsed.name,
+            message: `Ordinary skill cannot claim managed identity: ${parsed.name}`,
+          });
+          continue;
+        }
         if (await this.isDisabledSkillPath(parsed.path)) continue;
         totalDiscovered++;
         // 同名技能可能来自不同技能生态或版本，不能只按 name 去重；路径才是安装项身份。
@@ -97,6 +165,26 @@ export class NodeSkillAdapter implements SkillPort {
     options?: SkillOperationOptions,
   ): Promise<SkillContent> {
     throwIfAborted(options);
+    if (isConfidentialControllerSkill(request.name)) {
+      throw new Error("Controller skill requires private channel");
+    }
+
+    const managed = this.managedSkills.find((entry) =>
+      [entry.name, entry.skillId].some(
+        (identity) => normalizeSkillIdentity(identity) === normalizeSkillIdentity(request.name),
+      ),
+    );
+    if (managed) {
+      if (!managed.content)
+        throw new Error(`Managed skill unavailable: ${managed.name}: ${managed.error}`);
+      const maxBytes = request.maxBytes ?? DEFAULT_MAX_SKILL_BYTES;
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || managed.content.bytesRead > maxBytes) {
+        throw new Error(`Managed skill content exceeds byte limit: ${managed.name}`);
+      }
+      return structuredClone(managed.content);
+    }
+    if (this.isReservedIdentity(request.name))
+      throw new Error(`Managed skill alias is not allowed: ${request.name}`);
 
     const outcome = await this.discoverSkills(
       {
@@ -127,6 +215,15 @@ export class NodeSkillAdapter implements SkillPort {
       sizeBytes: info.size,
       truncated,
     };
+  }
+
+  private isReservedIdentity(value: string): boolean {
+    const normalized = normalizeSkillIdentity(value);
+    return (
+      isConfidentialControllerSkill(value) ||
+      this.reservedIdentities.has(normalized) ||
+      normalized.split(/[\\/:]/).some((part) => this.reservedIdentities.has(part))
+    );
   }
 
   private async skillFilesUnderRoot(
@@ -276,6 +373,90 @@ export class NodeSkillAdapter implements SkillPort {
 
 export function createNodeSkillAdapter(options: NodeSkillAdapterOptions = {}): NodeSkillAdapter {
   return new NodeSkillAdapter(options);
+}
+
+interface ManagedSkillSnapshot {
+  name: string;
+  skillId: string;
+  content?: SkillContent;
+  error?: string;
+}
+
+function normalizeSkillIdentity(value: string): string {
+  return value.trim().normalize("NFC").toLowerCase();
+}
+
+function snapshotManagedSkill(trust: ManagedSkillTrust, bundle: unknown): ManagedSkillSnapshot {
+  const identity = { name: trust.name, skillId: trust.skillId };
+  try {
+    const verified = verifyManagedSkillBundle(bundle, trust);
+    const directory = `managed-skill://${encodeURIComponent(verified.skillId)}/${verified.version}`;
+    const path = `${directory}/SKILL.md`;
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const parts: string[] = [];
+    let rawContent = "";
+    for (const file of verified.files) {
+      // 不能把已验签正文重新接回可写磁盘；本阶段仅完整内联文本引用，脚本和二进制明确拒绝。
+      if (
+        file.path !== "SKILL.md" &&
+        !/^references\/.+\.(?:md|txt|json|ya?ml|csv|tsv)$/i.test(file.path)
+      ) {
+        throw new Error(`Unsupported managed skill resource: ${file.path}`);
+      }
+      const text = decoder.decode(file.bytes);
+      if (text.includes("\0")) throw new Error(`Non-text managed skill resource: ${file.path}`);
+      if (file.path === "SKILL.md") rawContent = text;
+      else parts.push(`\n\n## Signed resource: ${directory}/${file.path}\n\n${text}`);
+    }
+    const diagnostics: SkillDiagnostic[] = [];
+    const frontmatter = extractFrontmatter(rawContent);
+    const parsed = frontmatter
+      ? parseFlatYaml(frontmatter, path, diagnostics)
+      : { values: {}, keys: [] };
+    const declaredName = parseScalar(parsed.values.name);
+    if (
+      declaredName !== undefined &&
+      declaredName.normalize("NFC") !== verified.name.normalize("NFC")
+    ) {
+      throw new Error("Managed skill frontmatter name does not match signed identity");
+    }
+    const content = stripFrontmatter(rawContent).trim() + parts.join("");
+    const bytesRead = Buffer.byteLength(content, "utf8");
+    if (bytesRead > MAX_MANAGED_CONTENT_BYTES)
+      throw new Error("Managed skill content exceeds byte limit");
+    const description = parseScalar(parsed.values.description) ?? "";
+    if (description.length > MAX_DESCRIPTION_LENGTH)
+      throw new Error("Managed skill description is too long");
+    return {
+      ...identity,
+      content: {
+        metadata: {
+          name: verified.name,
+          description,
+          whenToUse: parseScalar(parsed.values.when_to_use),
+          path,
+          directory,
+          rootPath: directory,
+          scope: "admin",
+          source: "bundled",
+          safeToAutoLoad: parsed.keys.every((key) => SAFE_FRONTMATTER_KEYS.has(key)),
+          frontmatterKeys: parsed.keys,
+          policy: { allowImplicitInvocation: true },
+        },
+        content,
+        baseDirectory: directory,
+        bytesRead,
+        sizeBytes: bytesRead,
+        truncated: false,
+      },
+    };
+  } catch (error) {
+    // 失败仍保留身份，禁止普通目录同名回退；诊断由既有 discovery/load 边界公开。
+    return {
+      ...identity,
+      error: error instanceof Error ? error.message : "Invalid managed skill bundle",
+    };
+  }
 }
 
 function extractFrontmatter(content: string): string | null {

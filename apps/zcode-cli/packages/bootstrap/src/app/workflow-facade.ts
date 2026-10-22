@@ -5,6 +5,8 @@ import { createNodeExecutionAdapter } from "@zcode/adapters/exec";
 import { createNodeFileSystemAdapter } from "@zcode/adapters/fs";
 import { createNodeWebFetchHttpClientAdapter } from "@zcode/adapters/http";
 import { createNodeSkillAdapter } from "@zcode/adapters/skills";
+import { createControllerSkillPort } from "@zcode/adapters/confidential-controller";
+import { prepareWorkflowController } from "./script-workflow-child-runtime.js";
 import type { ConfigResult } from "@zcode/adapters/config";
 import { createInMemorySessionEventStore } from "@zcode/adapters/storage";
 import {
@@ -105,6 +107,7 @@ export function createWorkflowFacade(deps: CreateWorkflowFacadeDeps): WorkflowFa
         traceId: childTraceContext.traceId,
       });
       const childRuntime = createWorkflowChildRuntime(deps, {
+        confidentialController: request.confidentialController,
         childSessionId,
         childTraceContext,
         workflowKind,
@@ -165,6 +168,19 @@ export function createWorkflowFacade(deps: CreateWorkflowFacadeDeps): WorkflowFa
     const cached = workflowRuntimeCache.get(cacheKey);
     if (cached) return cached;
     const runtimeForDefinition = new ExpertWorkflowRuntime({
+      prepareController: (snapshot, resume, signal) => {
+        if (snapshot.sessionId !== deps.sessionId) throw new Error("Workflow parent mismatch");
+        return prepareWorkflowController({
+          factory: deps.appOptions.createConfidentialControllerScope,
+          store: deps.sessionStore,
+          sessionId: deps.sessionId,
+          kind: "expert",
+          runId: snapshot.runId,
+          resume,
+          signal,
+          sourceScope: deps.runtime.getConfidentialController(),
+        });
+      },
       agentRunner: workflowAgentRunner,
       definition,
       onWorkflowEvent: deps.appOptions.onWorkflowEvent,
@@ -276,11 +292,24 @@ export function createWorkflowFacade(deps: CreateWorkflowFacadeDeps): WorkflowFa
 function createWorkflowChildRuntime(
   deps: CreateWorkflowFacadeDeps,
   options: {
+    confidentialController?: import("@zcode/contracts").ConfidentialControllerExecutionPort;
     childSessionId: SessionId;
     childTraceContext: TraceContext;
     workflowKind: string;
   },
 ): AgentRuntime {
+  // 已保存工作流可直接进入此处；父任务尚未授权时不能创建无保护的子Runtime。
+  if (deps.appOptions.createConfidentialControllerScope && !options.confidentialController)
+    throw new Error("请先在父任务中激活总控派单，再启动工作流。");
+  const ordinarySkillPort =
+    deps.configResult.config.features.skill && deps.configResult.config.skills.enabled
+      ? (deps.appOptions.skillPort ??
+        createNodeSkillAdapter({
+          extraRoots: deps.configResult.config.skills.roots,
+          // workflow 子 agent 必须继承主配置里的禁用路径。
+          disabledPaths: collectDisabledPaths(deps.configResult.config.skillOverrides),
+        }))
+      : undefined;
   return new AgentRuntime(
     options.childSessionId,
     {
@@ -333,18 +362,15 @@ function createWorkflowChildRuntime(
         deps.appOptions.contextSourcePort ??
         createNodeContextSourceAdapter({ env: deps.appOptions.env }),
       skillPort:
-        deps.configResult.config.features.skill && deps.configResult.config.skills.enabled
-          ? (deps.appOptions.skillPort ??
-            createNodeSkillAdapter({
-              extraRoots: deps.configResult.config.skills.roots,
-              // workflow 子 agent 复用同一套 skill 发现逻辑，也必须继承主配置里的禁用路径。
-              disabledPaths: collectDisabledPaths(deps.configResult.config.skillOverrides),
-            }))
-          : undefined,
+        deps.appOptions.createConfidentialControllerScope ||
+        deps.runtime.getConfidentialController()
+          ? createControllerSkillPort(ordinarySkillPort)
+          : ordinarySkillPort,
       mcpPort: deps.mcpPort,
       eventSink: deps.eventSink,
       modelFactory: deps.modelFactory,
       resolveEffectiveModelSelection: deps.appOptions.resolveEffectiveModelSelection,
+      confidentialController: options.confidentialController,
       // 对外交互端口由父 runtime 派生（permissionBroker + providerRuntimeHeadersPort）：
       // 子会话不是协议客户端认识的身份，直接透传 appOptions 的端口会让反向请求发到一个
       // 客户端找不到的 session 上、response 永不回来。

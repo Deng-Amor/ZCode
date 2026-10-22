@@ -19,6 +19,7 @@ import { createPopplerPdfDocumentAdapter } from "@zcode/adapters/pdf";
 import { createNodeSessionMailboxAdapter } from "@zcode/adapters/mailbox";
 import { createNodeContextSourceAdapter } from "@zcode/adapters/context";
 import { createNodeSkillAdapter } from "@zcode/adapters/skills";
+import { createControllerSkillPort } from "@zcode/adapters/confidential-controller";
 import { createMcpAdapter } from "@zcode/adapters/mcp";
 import {
   AgentRuntime,
@@ -87,7 +88,10 @@ import { getWorkflowConcurrencyGovernor } from "./workflow-concurrency-governor.
 import { createDynamicWorkflowSnippetService } from "./dynamic-workflow-snippet-service.js";
 import { createModelCatalogPort } from "./model-catalog-port.js";
 import { createDynamicWorkflowRunProgressSink } from "./dynamic-workflow-run-progress-sink.js";
-import { createScriptWorkflowAgentRuntime } from "./script-workflow-child-runtime.js";
+import {
+  createScriptWorkflowAgentRuntime,
+  prepareWorkflowController,
+} from "./script-workflow-child-runtime.js";
 import { workflowActorModelPolicy } from "./workflow-actor-model.js";
 import {
   workflowActorInteractionDescription,
@@ -643,8 +647,20 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       dynamicWorkflowJournal === undefined
         ? undefined
         : createDynamicWorkflowRunService({
+            prepareController: ({ runId, resume, signal }) =>
+              prepareWorkflowController({
+                factory: options.createConfidentialControllerScope,
+                store: sessionStore,
+                sessionId,
+                kind: "dynamic",
+                signal,
+                runId,
+                resume,
+                sourceScope: getRuntime().getConfidentialController(),
+              }),
             concurrency: workflowConcurrencyGovernor,
             createActorRuntime: ({
+              confidentialController,
               actor,
               persona,
               pinnedModel,
@@ -689,6 +705,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
                   ).configOverrides,
                 },
                 deps: {
+                  confidentialController,
                   agentTelemetry: modelTelemetry.agentExecution,
                   appOptions: options,
                   appVersion,
@@ -801,6 +818,25 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       registry: options.providerRegistry,
       currentSelection: () => getRuntime().getSessionModelSelection(),
     });
+    const ordinarySkillPort =
+      configResult.config.features.skill && configResult.config.skills.enabled
+        ? (options.skillPort ??
+          createNodeSkillAdapter({
+            additionalDirectories: options.additionalDirectories,
+            extraRoots: configResult.config.skills.roots,
+            extraResolvedRoots: [...pluginOutcome.skillRoots, ...bundledSkillRoots],
+            disabledPaths: [
+              ...collectDisabledPaths(configResult.config.skillOverrides),
+              ...(runtimeConfig.dynamicWorkflowEnabled === false
+                ? collectDynamicWorkflowDisabledSkillPaths(bundledSkillRoots)
+                : []),
+            ],
+          }))
+        : undefined;
+    const skillPort =
+      options.createConfidentialControllerScope || options.confidentialController
+        ? createControllerSkillPort(ordinarySkillPort)
+        : ordinarySkillPort;
     runtime = new AgentRuntime(sessionId, runtimeConfig, {
       ...(options.readSubagentRuntimeConfig
         ? {
@@ -840,6 +876,8 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       agentTelemetry: modelTelemetry.agentExecution,
       // 主代理的模型请求过治理器的 observer：立即放行，但让治理器看见它的 429 / 成功。
       modelRequestAdmission: workflowConcurrencyGovernor.observer(),
+      confidentialController: options.confidentialController,
+      createConfidentialControllerScope: options.createConfidentialControllerScope,
       eventStore: options.eventStore ?? createInMemorySessionEventStore(),
       sessionStore,
       sessionMailboxPort,
@@ -855,23 +893,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       artifactStore,
       contextSourcePort:
         options.contextSourcePort ?? createNodeContextSourceAdapter({ env: options.env }),
-      skillPort:
-        configResult.config.features.skill && configResult.config.skills.enabled
-          ? (options.skillPort ??
-            createNodeSkillAdapter({
-              additionalDirectories: options.additionalDirectories,
-              extraRoots: configResult.config.skills.roots,
-              extraResolvedRoots: [...pluginOutcome.skillRoots, ...bundledSkillRoots],
-              disabledPaths: [
-                ...collectDisabledPaths(configResult.config.skillOverrides),
-                // 动态工作流关闭时不提供 dynamic-workflows 技能：
-                // 十个工具都不在场，再让模型读到「怎么写工作流脚本」只会诱导它去调不存在的工具。
-                ...(runtimeConfig.dynamicWorkflowEnabled === false
-                  ? collectDynamicWorkflowDisabledSkillPaths(bundledSkillRoots)
-                  : []),
-              ],
-            }))
-          : undefined,
+      skillPort,
       mcpPort,
       eventSink: options.eventSink,
       onOffPeakLifecycleEvent: options.onOffPeakLifecycleEvent

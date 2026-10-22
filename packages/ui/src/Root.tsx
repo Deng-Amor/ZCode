@@ -1,4 +1,5 @@
 import { ProjectDirectoryProvider } from "@/project-sidebar/ProjectDirectoryProvider.js";
+import { CcodeStartupLogin } from "@/ccode-account/index.js";
 import { RemoteProjectPicker } from "@/project-sidebar/RemoteProjectPicker.js";
 import {
   buildRemoteWorkspaceIdentity,
@@ -172,7 +173,9 @@ export function Root(props: RootProps) {
                             <RequestSecurityHost />
                             <MarketingTouchProvider desktop={props.isDesktop === true}>
                               <RemoteConnectionProgressProvider>
-                                <RootInner {...props} />
+                                <CcodeStartupLogin>
+                                  <RootInner {...props} />
+                                </CcodeStartupLogin>
                               </RemoteConnectionProgressProvider>
                             </MarketingTouchProvider>
                           </RewardsProvider>

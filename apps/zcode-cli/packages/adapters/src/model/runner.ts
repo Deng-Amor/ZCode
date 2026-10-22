@@ -1,4 +1,12 @@
 import type { ModelRequestSecurityState } from "./request-security.js";
+import {
+  protectControllerModelRequest,
+  privateControllerStatusSink,
+  privateGlobalPromptModelError,
+  generateControllerText,
+  streamControllerText,
+  PrivateControllerError,
+} from "../confidential-controller/index.js";
 // ============================================================
 // Vercel AI SDK model runner
 // ============================================================
@@ -167,6 +175,7 @@ export class AiSdkModelAdapter {
     const toLegacyRequest = (request: ModelExecutionRequest): AiSdkModelTextRequest => {
       const context = getCurrentModelInvocationContext();
       const {
+        confidentialController: _confidentialController,
         refreshRuntimeHeadersBeforeAttempt: contextRefreshRuntimeHeadersBeforeAttempt,
         ...invocationContext
       } = context ?? {};
@@ -259,6 +268,7 @@ export class AiSdkModelAdapter {
             ...assertSameBoundModel(
               resolved,
               boundResolution.resolveRequest({
+                skipTranscript: request.metadata?.skipTranscript === true,
                 options: {
                   maxOutputTokens,
                   reasoningLevel: optionValues.reasoningLevel,
@@ -273,6 +283,7 @@ export class AiSdkModelAdapter {
           })
         : () => ({
             ...boundResolution.resolveRequest({
+              skipTranscript: request.metadata?.skipTranscript === true,
               options: {
                 maxOutputTokens,
                 reasoningLevel: optionValues.reasoningLevel,
@@ -302,7 +313,21 @@ export class AiSdkModelAdapter {
       options: options.options,
       executor: {
         generateText: (request) => {
-          const legacyRequest = toLegacyRequest(request);
+          const legacyRequest = protectControllerModelRequest(toLegacyRequest(request));
+          const controller = getCurrentModelInvocationContext()?.confidentialController;
+          if (controller)
+            return generateControllerText(controller, legacyRequest, (privateRequest) =>
+              this.generateTextWithResolved(
+                privateRequest,
+                resolved,
+                resolveForRequest(privateRequest, request.options),
+              ),
+            );
+          if (
+            legacyRequest.metadata?.confidentialController === true &&
+            legacyRequest.metadata?.startupGlobalSystemPrompt !== true
+          )
+            throw new PrivateControllerError("UNAVAILABLE");
           return this.generateTextWithResolved(
             legacyRequest,
             resolved,
@@ -310,7 +335,21 @@ export class AiSdkModelAdapter {
           );
         },
         streamText: (request) => {
-          const legacyRequest = toLegacyRequest(request);
+          const legacyRequest = protectControllerModelRequest(toLegacyRequest(request));
+          const controller = getCurrentModelInvocationContext()?.confidentialController;
+          if (controller)
+            return streamControllerText(controller, legacyRequest, (privateRequest) =>
+              this.streamTextWithResolved(
+                privateRequest,
+                resolved,
+                resolveForRequest(privateRequest, request.options),
+              ),
+            );
+          if (
+            legacyRequest.metadata?.confidentialController === true &&
+            legacyRequest.metadata?.startupGlobalSystemPrompt !== true
+          )
+            throw new PrivateControllerError("UNAVAILABLE");
           return this.streamTextWithResolved(
             legacyRequest,
             resolved,
@@ -321,24 +360,29 @@ export class AiSdkModelAdapter {
     });
   }
 
-  private generateTextWithResolved(
+  private async generateTextWithResolved(
     request: AiSdkModelTextRequest,
     resolved: ResolvedAiSdkModel,
     resolveModel: () => ResolvedAiSdkModel,
   ): Promise<ModelTextResult> {
     const projectedRequest = projectRequestHistory(request, resolved);
-    return runGenerateText({
-      debugDir: this.debugDir,
-      env: this.env,
-      logger: this.logger,
-      request: projectedRequest,
-      resolveModel,
-      resolved,
-      retry: resolveRetryOptionsForBudget(this.retry, projectedRequest.modelRetryBudget),
-      runtime: this.runtime,
-      statusSink: this.statusSink,
-      modelIoFullRetentionEnabled: this.modelIoFullRetentionEnabled,
-    });
+    const privateCall = request.metadata?.confidentialController === true;
+    try {
+      return await runGenerateText({
+        debugDir: privateCall ? undefined : this.debugDir,
+        env: this.env,
+        logger: privateCall ? undefined : this.logger,
+        request: projectedRequest,
+        resolveModel,
+        resolved,
+        retry: resolveRetryOptionsForBudget(this.retry, projectedRequest.modelRetryBudget),
+        runtime: this.runtime,
+        statusSink: privateCall ? privateControllerStatusSink(this.statusSink) : this.statusSink,
+        modelIoFullRetentionEnabled: privateCall ? false : this.modelIoFullRetentionEnabled,
+      });
+    } catch (error) {
+      throw privateCall ? privateGlobalPromptModelError(error) : error;
+    }
   }
 
   private async *streamTextWithResolved(
@@ -347,20 +391,25 @@ export class AiSdkModelAdapter {
     resolveModel: () => ResolvedAiSdkModel,
   ): AsyncGenerator<ModelStreamEvent> {
     const projectedRequest = projectRequestHistory(request, resolved);
-    yield* runStreamText({
-      debugDir: this.debugDir,
-      env: this.env,
-      logger: this.logger,
-      request: projectedRequest,
-      resolveModel,
-      resolved,
-      // single-attempt 预算（带 selectionFallback 的执行作用域句柄）把 maxAttempts 收敛为 1。
-      retry: resolveRetryOptionsForBudget(this.retry, projectedRequest.modelRetryBudget),
-      runtime: this.runtime,
-      statusSink: this.statusSink,
-      streamIdleTimeoutMs: this.streamIdleTimeoutMs,
-      modelIoFullRetentionEnabled: this.modelIoFullRetentionEnabled,
-    });
+    const privateCall = request.metadata?.confidentialController === true;
+    try {
+      yield* runStreamText({
+        debugDir: privateCall ? undefined : this.debugDir,
+        env: this.env,
+        logger: privateCall ? undefined : this.logger,
+        request: projectedRequest,
+        resolveModel,
+        resolved,
+        // single-attempt 预算（带 selectionFallback 的执行作用域句柄）把 maxAttempts 收敛为 1。
+        retry: resolveRetryOptionsForBudget(this.retry, projectedRequest.modelRetryBudget),
+        runtime: this.runtime,
+        statusSink: privateCall ? privateControllerStatusSink(this.statusSink) : this.statusSink,
+        streamIdleTimeoutMs: this.streamIdleTimeoutMs,
+        modelIoFullRetentionEnabled: privateCall ? false : this.modelIoFullRetentionEnabled,
+      });
+    } catch (error) {
+      throw privateCall ? privateGlobalPromptModelError(error) : error;
+    }
   }
 }
 

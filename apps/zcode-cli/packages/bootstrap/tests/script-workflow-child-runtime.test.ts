@@ -165,6 +165,43 @@ describe("script workflow child runtime — actor transcript 直播通道", () =
     expect(await sessionStore.getSession(actorSessionId)).toBeDefined();
   });
 
+  it("inherits startup global rules into workflow persona without persisting their body", async () => {
+    const sentinel = "WORKFLOW_PRIVATE_GLOBAL_SENTINEL";
+    const requests: string[] = [];
+    const deps = makeDeps();
+    deps.runtimeConfig = { ...deps.runtimeConfig, globalSystemPrompt: sentinel };
+    deps.modelFactory = createTestModelFactoryFromAdapter({
+      async generateText(request) {
+        requests.push(JSON.stringify(request.messages));
+        return {
+          finishReason: "stop",
+          text: "actor done",
+          usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+        } as ModelResult;
+      },
+    });
+    const actor = createScriptWorkflowAgentRuntime({
+      childSessionId: actorSessionId,
+      configOverrides: { workflowActor: { name: "reviewer", persona: "PUBLIC_ACTOR_PERSONA" } },
+      deps,
+      request: { opts: {} } as never,
+      traceContext: createRootTraceContext({ sessionId: parentSessionId }),
+    });
+    await actor.ensureSessionPersistedForExternalActivity("actor");
+    await actor.executeTurn("go");
+    await actor.executeTurn("continue");
+    expect(requests.length).toBeGreaterThanOrEqual(2);
+    for (const request of requests) {
+      expect(request).toContain(sentinel);
+      expect(request).toContain("PUBLIC_ACTOR_PERSONA");
+    }
+    expect(
+      JSON.stringify(await sessionStore.messages({ sessionID: actorSessionId })),
+    ).not.toContain(sentinel);
+    expect(JSON.stringify(await sessionStore.getSession(actorSessionId))).not.toContain(sentinel);
+    expect(JSON.stringify(await parentStore.getEvents(actorSessionId))).not.toContain(sentinel);
+  });
+
   it("转发流从 sequenceNumber 1（SessionTitleUpdated）起，保留 actor 的 sessionId", async () => {
     const actorRuntime = await makeActorRuntime();
 

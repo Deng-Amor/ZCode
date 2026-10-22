@@ -1,5 +1,11 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { CollaborationMode, PermissionRuleset, ProjectId } from "@zcode/contracts";
+import type {
+  CollaborationMode,
+  ConfidentialControllerBinding,
+  PermissionRuleset,
+  ProjectId,
+  SessionId,
+} from "@zcode/contracts";
 import { isCollaborationMode } from "../codecs.js";
 import { decodeJson } from "../json.js";
 import type { LocalSettingRow, PermissionRow } from "../rows.js";
@@ -83,6 +89,72 @@ export function saveProjectPermissionMode(
     value: JSON.stringify({ mode: input.mode }),
   });
   return input.mode;
+}
+
+function controllerBinding(value: unknown): ConfidentialControllerBinding {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Invalid controller binding");
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 2 ||
+    !Number.isSafeInteger(record.version) ||
+    (record.version as number) <= 0 ||
+    typeof record.digest !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.digest)
+  )
+    throw new Error("Invalid controller binding");
+  return { version: record.version as number, digest: record.digest };
+}
+
+function assertControllerRunKey(runKey: string): void {
+  if (!/^(target|input|turn|workflow):[^\x00-\x1f\x7f]{1,512}$/.test(runKey))
+    throw new Error("Invalid controller run identity");
+}
+
+export function getConfidentialControllerBinding(
+  db: DatabaseSync,
+  sessionID: SessionId,
+  runKey: string,
+): ConfidentialControllerBinding | null {
+  assertControllerRunKey(runKey);
+  const row = db
+    .prepare(`select value, schema_version from local_setting
+    where scope = 'session' and scope_id = ? and namespace = 'confidential-controller' and key = ?`)
+    .get(sessionID, runKey) as { value: string; schema_version: number } | undefined;
+  if (!row) return null;
+  // 损坏绑定必须拒绝恢复，不能被当成无记录而重新选择最新版本。
+  try {
+    if (row.schema_version !== 1) throw new Error("Unsupported binding schema");
+    return controllerBinding(decodeJson<unknown>(row.value));
+  } catch {
+    // JSON解析异常可能包含原始数据片段，仅返回固定错误。
+    throw new Error("Invalid controller binding");
+  }
+}
+
+export function bindConfidentialControllerRelease(
+  db: DatabaseSync,
+  sessionID: SessionId,
+  runKey: string,
+  binding: ConfidentialControllerBinding,
+): void {
+  assertControllerRunKey(runKey);
+  const value = controllerBinding(binding);
+  const now = Date.now();
+  // 只有首个授权可以绑定；并发写者不能覆盖另一版本，不触碰会话排序时间。
+  db.prepare(`insert into local_setting
+    (scope, scope_id, namespace, key, value, schema_version, time_created, time_updated)
+    values ('session', ?, 'confidential-controller', ?, ?, 1, ?, ?)
+    on conflict(scope, scope_id, namespace, key) do nothing`).run(
+    sessionID,
+    runKey,
+    JSON.stringify(value),
+    now,
+    now,
+  );
+  const saved = getConfidentialControllerBinding(db, sessionID, runKey);
+  if (!saved || saved.version !== value.version || saved.digest !== value.digest)
+    throw new Error("Controller release binding conflict");
 }
 
 function readLocalSetting(

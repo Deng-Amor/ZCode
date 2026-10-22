@@ -77,6 +77,7 @@ declare global {
       consumeUserGesture(sandboxId: string): Promise<boolean>;
     };
     zcode: {
+      ccodeAccount: import("@zcode/shared").CcodeAccountPort;
       connectRemote(
         options: RemoteTarget,
         requestId?: string,

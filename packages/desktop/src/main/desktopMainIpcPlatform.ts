@@ -1,6 +1,10 @@
 import { decorateRequestSecurityLogArgs } from "./request-security-edition/index.js";
 /* eslint-disable max-lines -- 桌面平台 IPC 集中装配，拆散会让权限边界更难审计；行数随平台能力增长。 */
 import { BrowserWindow, dialog, ipcMain, nativeTheme } from "electron";
+import {
+  ConfidentialControllerError,
+  type ControllerApplication,
+} from "@zcode/services/confidential-controller";
 import { readZCodeStdioTapDevState } from "@zcode/services/node";
 import {
   DesktopCommandIds,
@@ -64,6 +68,8 @@ import { registerDesktopCommandIpcHandler } from "./desktopCommandIpc.js";
 import { registerCuaPipActiveSessionIpc } from "./desktopCuaPipIpc.js";
 
 export function registerPlatformIpcHandlers(options: {
+  ccodeAccount: ControllerApplication["account"];
+  isCcodeAccountSender: (event: Electron.IpcMainInvokeEvent) => boolean;
   fetchHelpConfig?: () => Promise<unknown>;
   logger: {
     info: (...args: unknown[]) => void;
@@ -114,6 +120,56 @@ export function registerPlatformIpcHandlers(options: {
   /** Browser tab 关闭、挂起、恢复与跨重启 shell IPC。 */
   browserViewResidencyHandlers?: BrowserViewResidencyIpcHandlers;
 }) {
+  // 私有登录数据不能进入通用错误日志；仅接受可信应用顶层窗口。
+  const accountCall = async <T>(event: Electron.IpcMainInvokeEvent, run: () => Promise<T> | T) => {
+    if (!options.isCcodeAccountSender(event)) throw new Error("CCODE_ACCOUNT_FORBIDDEN");
+    try {
+      return await run();
+    } catch (error) {
+      throw new Error(error instanceof ConfidentialControllerError ? error.code : "UNAVAILABLE");
+    }
+  };
+  ipcMain.handle(PlatformChannels.CcodeAccountState, (event) =>
+    accountCall(event, () => options.ccodeAccount.getState()),
+  );
+  ipcMain.handle(PlatformChannels.CcodeAccountTenants, (event) =>
+    accountCall(event, () => options.ccodeAccount.listTenants()),
+  );
+  ipcMain.handle(PlatformChannels.CcodeAccountLogout, (event) =>
+    accountCall(event, () => options.ccodeAccount.logout()),
+  );
+  ipcMain.handle(PlatformChannels.CcodeAccountLogin, (event, input: unknown) =>
+    accountCall(event, () => {
+      if (!input || typeof input !== "object" || Array.isArray(input))
+        throw new ConfidentialControllerError("AUTH_REQUIRED");
+      const value = input as Record<string, unknown>;
+      if (
+        Object.keys(value).some(
+          (key) => !["tenantId", "username", "password", "captchaVerification"].includes(key),
+        ) ||
+        typeof value.tenantId !== "string" ||
+        !/^\d{1,20}$/.test(value.tenantId) ||
+        typeof value.username !== "string" ||
+        value.username.length < 1 ||
+        value.username.length > 128 ||
+        typeof value.password !== "string" ||
+        value.password.length < 1 ||
+        value.password.length > 1024 ||
+        (value.captchaVerification !== undefined &&
+          (typeof value.captchaVerification !== "string" ||
+            value.captchaVerification.length > 8192))
+      )
+        throw new ConfidentialControllerError("AUTH_REQUIRED");
+      return options.ccodeAccount.login({
+        tenantId: value.tenantId,
+        username: value.username,
+        password: value.password,
+        ...(typeof value.captchaVerification === "string"
+          ? { captchaVerification: value.captchaVerification }
+          : {}),
+      });
+    }),
+  );
   ipcMain.handle(PlatformChannels.SelectDirectory, async () => {
     const result = await dialog.showOpenDialog({
       properties: ["openDirectory", "createDirectory"],

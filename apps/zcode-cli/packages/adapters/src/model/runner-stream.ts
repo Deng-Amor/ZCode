@@ -119,7 +119,9 @@ export async function* runStreamText(input: {
     resolved: input.resolved,
     transport: ModelTransportKindValue.Sse,
   });
-  const recordModelIO = shouldRecordModelIO(input.env);
+  // 流式路径过去漏看跳过记录标记，导致私有调用仍写入 model-io。
+  const recordModelIO =
+    input.request.metadata?.skipTranscript !== true && shouldRecordModelIO(input.env);
   const isDev = isDevelopmentModelIOEnv(input.env);
   let requestMessages = input.request.messages;
   let signatureRepairAttempted = false;

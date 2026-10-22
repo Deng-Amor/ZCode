@@ -1,4 +1,5 @@
-import { chmod, readFile, rm } from "node:fs/promises";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { basename, dirname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
@@ -213,6 +214,10 @@ export const buildCli = async ({
   }
 
   await chmod(outfile, executableFileMode);
+  await writeFile(resolve(cliDirectory, 'dist/ccode-controller-capability.json'), JSON.stringify({
+    schemaVersion: 1, protocolVersion: 2, entry: 'zcode.cjs',
+    sha256: createHash('sha256').update(await readFile(outfile)).digest('hex'),
+  }) + '\n', 'utf8');
   // zcode.cjs 内联了第三方代码；dist 旁的伴随声明供发行 CLI 与统一分发包（build-zcode）复制。
   await stageThirdPartyNotices(resolve(cliDirectory, "dist"), resolve(rootDirectory, "../.."));
 };

@@ -36,6 +36,13 @@ export async function runModelTextRequest(
   this: AgentRuntimeInternal,
   options: RunModelTextRequestOptions,
 ): Promise<RuntimeModelTextResult> {
+  // 总控正文的唯一所有者是桌面应用的内存缓存。Runtime 不等待模型先调用
+  // `Skill 总控派单`：首次模型请求先建立应用级 scope，随后每一次请求都由
+  // adapter 在首个 system message 注入同一份已验签正文。
+  if (!this.confidentialController && this.createConfidentialControllerScope) {
+    this.confidentialControllerScope ??= this.createConfidentialControllerScope();
+    this.confidentialController = this.confidentialControllerScope;
+  }
   const finishAssembly = beginLocalTurnPreparation(options.traceContext, "request_assembly");
   const model = options.model;
   const executionModelSelection = {
@@ -77,6 +84,7 @@ export async function runModelTextRequest(
   // 正常请求传递模型级 effective 预算，Compact 传递 min(effective, 20K) 的 summary
   // 任务预算；adapter 只做 provider 兼容映射，不再施加独立 global cap。
   const modelInvocationContext = {
+    confidentialController: this.confidentialController,
     metadata: traceContextToLogContext(projectedOptions.traceContext),
     // 会话类型、重试预算与准入端口由 createRuntimeModel 绑在句柄上
     // turn step 与工具内部的模型调用同一来源。

@@ -1,9 +1,14 @@
+import { pathToFileURL } from "node:url";
+import {
+  createControllerApplication,
+  createEncryptedPlatformSessionStore,
+} from "@zcode/services/confidential-controller";
 import { installRequestSecurityDiagnostics } from "./request-security-edition/index.js";
 import { createLocalTtftExporter } from "./localTtftExporter.js";
 /* eslint-disable max-lines */
 import "./desktopEarlyDataBaseDirBootstrap.js";
 import "./desktopEarlyChromiumHardwareAccelerationBootstrap.js";
-import { powerMonitor, powerSaveBlocker } from "electron";
+import { powerMonitor, powerSaveBlocker, safeStorage } from "electron";
 import { crashCapturePaths } from "./appCrashCaptureBootstrap.js";
 import { armsInitPromise } from "./appARMSBootstrap.js";
 import {
@@ -656,6 +661,46 @@ const explicitQuitRef = { current: false };
 let appQuitPreparationInFlight: Promise<void> | null = null;
 let hasPreparedAppQuit = false;
 const windowWorkspaceMap = new Map<number, Set<string>>();
+// 应用级内存所有者；仅内置验签公钥，私钥和核心正文由管理员及中台保管。
+const ccodeControllerApplication = createControllerApplication({
+  sessionStore: createEncryptedPlatformSessionStore({
+    filePath: join(app.getPath("userData"), "ccode-account", "session.enc"),
+    encryption: {
+      isAvailable: async () => {
+        await app.whenReady();
+        return (
+          safeStorage.isEncryptionAvailable() &&
+          (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text")
+        );
+      },
+      encrypt: async (plaintext) => safeStorage.encryptString(plaintext),
+      decrypt: async (ciphertext) => safeStorage.decryptString(Buffer.from(ciphertext)),
+    },
+  }),
+  apiBaseUrl: "https://dp.sccsai.com/admin-api/",
+  trusts: [
+    {
+      skillId: "controller",
+      name: "总控派单",
+      minimumVersion: 1,
+      publicKeyPem:
+        "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA4Fice+HrcSUzJg9NCLgKtvjYFwvV1ldQwDfBOETEPMA=\n-----END PUBLIC KEY-----\n",
+    },
+  ],
+});
+app.on("will-quit", () => ccodeControllerApplication.dispose());
+ccodeControllerApplication.account.onStateChanged(() => {
+  for (const win of getMainApplicationWindows()) {
+    if (!win.webContents.isDestroyed()) {
+      // 仅通知状态失效，不广播身份、凭据或核心内容。
+      try {
+        win.webContents.send(PlatformChannels.CcodeAccountChanged);
+      } catch {
+        // 窗口关闭竞态不能阻断其他窗口的失效通知。
+      }
+    }
+  }
+});
 const windowTaskRealtimeHostIdMap = new Map<number, string>();
 const windowUnreadCountMap = new Map<number, number>();
 const windowHostProcessMap = new Map<number, ElectronUtilityProcess>();
@@ -1267,6 +1312,7 @@ async function prepareAppQuit(reason: string, kind: AppShutdownKind = "normal"):
 }
 
 function exitPreparedApp(reason: string): never | void {
+  ccodeControllerApplication.dispose();
   logger.info(`[app-quit] exiting prepared app (${reason})`);
   if (process.env.ZCODE_E2E_RUN_ID?.trim()) {
     flushMainE2ECoverage((error) => {
@@ -1891,6 +1937,7 @@ function createWindowInstance(startupBootstrap: StartupWindowBootstrap = {}) {
         },
         {
           hostProcessLocalEnv,
+          createControllerPrivateChannel: ccodeControllerApplication.createPrivateChannel,
           desktopContextPromptEnabled: resolveDesktopContextPromptEnabledForHost,
           logger,
           broadcastHub,
@@ -2278,6 +2325,26 @@ app.whenReady().then(async () => {
   }
 
   registerPlatformIpcHandlers({
+    ccodeAccount: ccodeControllerApplication.account,
+    isCcodeAccountSender: (event) => {
+      const owner = getMainApplicationWindows().find((win) => win.webContents === event.sender);
+      if (!owner || event.senderFrame !== owner.webContents.mainFrame) return false;
+      try {
+        const actual = new URL(event.senderFrame.url);
+        const expected = new URL(
+          !app.isPackaged && process.env["ELECTRON_RENDERER_URL"]
+            ? process.env["ELECTRON_RENDERER_URL"]
+            : pathToFileURL(join(import.meta.dirname, "../renderer/index.html")).href,
+        );
+        actual.hash = "";
+        actual.search = "";
+        expected.hash = "";
+        expected.search = "";
+        return actual.href === expected.href;
+      } catch {
+        return false;
+      }
+    },
     fetchHelpConfig: readHelpConfig,
     logger,
     // CDP-on-guest pivot：renderer `<webview>` dom-ready 上报 guest webContentsId → attach。

@@ -32,6 +32,92 @@ import {
 import { executeAdapterGenerateText, executeAdapterStreamText } from "./test-adapter-model.js";
 
 describe("AiSdkModelAdapter", () => {
+  it.each(["generate", "stream"] as const)(
+    "preserves classified %s failures without exposing startup prompt payloads",
+    async (mode) => {
+      const sentinel = "PRIVATE_ERROR_BODY_SENTINEL";
+      const runtime: AiSdkModelRuntime = {
+        async generateText() {
+          throw apiError(sentinel, { statusCode: 400, isRetryable: false });
+        },
+        streamText() {
+          return {
+            fullStream: failingStream(apiError(sentinel, { statusCode: 400, isRetryable: false })),
+          } as never;
+        },
+      };
+      const adapter = new AiSdkModelAdapter({
+        registry: registry(),
+        runtime,
+        retry: { maxAttempts: 1, baseDelayMs: 0, jitter: false },
+      });
+      const request = {
+        providerId: "test",
+        modelId: "model-a",
+        metadata: { confidentialController: true, startupGlobalSystemPrompt: true },
+        messages: [
+          { role: "system" as const, content: sentinel },
+          { role: "user" as const, content: "hello" },
+        ],
+      };
+      const execute = async () => {
+        if (mode === "generate") return executeAdapterGenerateText(adapter, request);
+        for await (const _event of executeAdapterStreamText(adapter, request)) {
+          /* drain */
+        }
+      };
+      let observed: unknown;
+      try {
+        await execute();
+      } catch (error) {
+        observed = error;
+      }
+      expect(observed).toBeInstanceOf(AiSdkModelAdapterError);
+      expect((observed as AiSdkModelAdapterError).code).toBe(ModelErrorCode.InvalidModelRequest);
+      expect(String(observed)).not.toContain(sentinel);
+      expect(JSON.stringify(observed)).not.toContain(sentinel);
+    },
+  );
+  it("runs startup global prompts without a lease and never writes model payload diagnostics", async () => {
+    const debugDir = await mkdtemp(join(tmpdir(), "global-prompt-privacy-"));
+    const seen: string[] = [];
+    const runtime: AiSdkModelRuntime = {
+      async generateText(options) {
+        seen.push(JSON.stringify(options.messages));
+        return { finishReason: "stop", text: "done", usage: usage(1, 1) } as never;
+      },
+      streamText(options) {
+        seen.push(JSON.stringify(options.messages));
+        return {
+          fullStream: stream([
+            { type: "text-delta", id: "text-1", text: "done" },
+            { type: "finish", finishReason: "stop", totalUsage: usage(1, 1) },
+          ]),
+        } as never;
+      },
+    };
+    const adapter = new AiSdkModelAdapter({ registry: registry(), runtime, debugDir });
+    const request = {
+      providerId: "test",
+      modelId: "model-a",
+      metadata: { confidentialController: true, startupGlobalSystemPrompt: true },
+      messages: [
+        { role: "system" as const, content: "PRIVATE_STARTUP_SENTINEL" },
+        { role: "user" as const, content: "hello" },
+      ],
+    };
+    try {
+      expect((await executeAdapterGenerateText(adapter, request)).text).toBe("done");
+      const events: ModelStreamEvent[] = [];
+      for await (const event of executeAdapterStreamText(adapter, request)) events.push(event);
+      expect(events.some((event) => event.type === "text_delta")).toBe(true);
+      expect(seen).toHaveLength(2);
+      expect(seen.every((value) => value.includes("PRIVATE_STARTUP_SENTINEL"))).toBe(true);
+      expect(await readdir(debugDir)).toEqual([]);
+    } finally {
+      await rm(debugDir, { force: true, recursive: true });
+    }
+  });
   it("extends SSE idle timeout by 30 seconds for each retry", () => {
     expect(resolveModelStreamIdleTimeoutMs({})).toBe(600_000);
     expect(resolveModelStreamIdleTimeoutMs({ retryNumber: 1 })).toBe(630_000);

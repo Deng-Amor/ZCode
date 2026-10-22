@@ -73,6 +73,17 @@ export function createEvent(
   payload: unknown,
   traceContext: TraceContext,
 ): SessionEvent {
+  // 全局规则已位于标准 system message；请求事件会被持久化并投影到客户端，只保留计数。
+  if (
+    this.config.globalSystemPrompt?.trim() &&
+    type === SessionEventType.ModelRequest &&
+    payload &&
+    typeof payload === "object" &&
+    "messages" in payload
+  ) {
+    const { messages, ...summary } = payload;
+    payload = { ...summary, messageCount: Array.isArray(messages) ? messages.length : 0 };
+  }
   return createSessionEvent(type, this.sessionId, payload, {
     turnId: traceContext.turnId,
     traceId: traceContext.traceId,

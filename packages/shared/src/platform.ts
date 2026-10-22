@@ -680,7 +680,37 @@ export type CuaOsSupport =
  * 比如 native dialog、窗口生命周期控制等。
  * 业务服务（文件、终端、凭据等）走 IServiceAccessor 的 RPC 通道。
  */
+export interface CcodePlatformTenant {
+  id: string;
+  name: string;
+}
+
+export interface CcodePlatformLoginInput {
+  tenantId: string;
+  username: string;
+  password: string;
+  captchaVerification?: string;
+}
+
+export interface CcodePlatformLoginState {
+  authenticated: boolean;
+  tenantId?: string;
+  userId?: string;
+}
+
+/** Application account only. Never expose tokens or confidential instructions here. */
+export interface CcodeAccountPort {
+  /** Invalidation only; reread authoritative account state after subscribing. */
+  onStateChanged(listener: () => void): () => void;
+  getState(): Promise<CcodePlatformLoginState>;
+  listTenants(): Promise<CcodePlatformTenant[]>;
+  login(input: CcodePlatformLoginInput): Promise<CcodePlatformLoginState>;
+  logout(): Promise<void>;
+}
+
 export interface IPlatformService {
+  /** Desktop application identity; absent on Web and remote/mobile clients. */
+  ccodeAccount?: CcodeAccountPort;
   /** 是否支持当前客户端本机文件的默认应用与目录操作；Web 不具备此能力。 */
   canOpenLocalFiles?: boolean;
 

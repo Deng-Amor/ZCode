@@ -1,6 +1,10 @@
 {
   "name": "zcode",
   "version": "3.16.2",
+  "ccodeRelease": {
+    "version": "0.0.7",
+    "channel": "preview"
+  },
   "private": true,
   "type": "module",
   "scripts": {
