@@ -52,6 +52,7 @@ import type { PromptRuntimeCommand } from "../command-queue.js";
 import { enqueueCancellableRuntimeCommand } from "./runtime-command-submit.js";
 import { buildReferencedSessionContextReminderBody } from "../../session-context/read-session-context.js";
 import { runRegularTurnLoop } from "./turn-loop.js";
+import { SECURITY_NOTICE_TURN_PHRASE } from "../../context/sections/identity.js";
 import {
   maybeStartDeferredSessionTitleGeneration,
   maybeStartSessionTitleGeneration,
@@ -161,6 +162,16 @@ export async function executeTurnCommand(
   const turnId = startReservation?.turnId ?? createTurnId();
   const queryId = options?.queryId ?? (options?.inputId as QueryId | undefined) ?? createQueryId();
   const displayInput = options?.displayInput ?? input;
+  const omitSecurityNotice =
+    displayInput.includes(SECURITY_NOTICE_TURN_PHRASE) &&
+    !this.config.systemPrompt?.trim() &&
+    !this.config.subagentContext &&
+    !this.config.workflowActor &&
+    (!this.config.taskType ||
+      ["interactive", "fork", "selection_side_chat"].includes(this.config.taskType)) &&
+    !options?.inputSource &&
+    !options?.automationId &&
+    !options?.offPeakTaskId;
   const turnTraceContext =
     startReservation?.traceContext ??
     createChildTraceContext(options?.traceContext ?? this.rootTraceContext, {
@@ -795,6 +806,7 @@ export async function executeTurnCommand(
           ACTIVE_PROJECT_MEMORY_RETRIEVAL_BRANCH,
         );
         loopState = {
+          omitSecurityNotice,
           activeTurn,
           ...(options?.automationId ? { automationId: options.automationId } : {}),
           // 闲时派发轮的身份进入 loop state，供工具执行边界 deny OffPeakCreate。

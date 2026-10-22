@@ -79,6 +79,8 @@ export interface TurnRequestState {
 }
 
 export interface RegularTurnLoopState {
+  /** 只属于当前接纳轮，不持久化，也不由历史、工具结果或 busy steering 推断。 */
+  omitSecurityNotice?: boolean;
   offPeakExecutionId?: string;
   activeTurn?: ActiveTurnSteeringState;
   /** Host admission 显式传入的本轮 automation 身份；不能从持久 task metadata 推断。 */

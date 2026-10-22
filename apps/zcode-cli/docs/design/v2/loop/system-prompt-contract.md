@@ -34,7 +34,7 @@ active context contract. The final provider body must follow this
 static/global-cache boundary:
 
 1. Short ZCode software-engineering-agent intro with no heading.
-2. Authorized security boundary.
+2. Authorized security boundary (except the explicit current-turn opt-out below).
 3. `# Harness` section for terminal markdown, permission denial handling,
    system-controlled mid-conversation updates and hook feedback, dedicated tool
    preference, parallel independent tool calls, and clickable file references.
@@ -45,6 +45,47 @@ The provider-visible MCS and hook bullet is exactly:
 
 The static block ends at the final `# Harness` bullet. Code-style and
 risk/reporting paragraphs must not be emitted in `system[1]`.
+
+### Current-turn security notice opt-out
+
+The exact, case-sensitive phrase `d8g2s3417199orimy...hello，qwen。` in the
+current submitted user display text omits only the built-in `SECURITY_NOTICE`
+from ordinary interactive main-agent requests for that turn. Matching is literal
+substring matching; punctuation is significant. The phrase is not a credential.
+Attachments, tool output, history and generated prompt expansions are not scanned.
+Custom system prompts, subagents, workflow actors, automation and off-peak turns
+are excluded. Busy steering does not change the already admitted turn decision;
+a queued message is evaluated when it starts its own turn.
+
+The runtime freezes this decision before asynchronous turn preparation. The turn
+loop owns it and projects both provider messages and recorded request messages
+without mutating canonical history. Tool continuations, request retries and
+context rebuilds retain the same turn decision. A subsequent turn without the
+phrase uses the default notice, including after cancellation or session resume.
+No persistent toggle, protocol change, permission change, controller exemption or
+provider-policy override is introduced. Child and internal summarization requests
+do not inherit the opt-out.
+
+```mermaid
+sequenceDiagram
+    participant U as Submitted user text
+    participant T as Runtime turn owner
+    participant P as Request projection
+    participant M as Model
+    U->>T: Admit current display text
+    T->>T: Freeze literal-match decision
+    loop Each main-agent model step in this turn
+        T->>P: Canonical context + turn decision
+        P->>M: Omit only built-in notice when enabled
+    end
+    U->>T: Next submission creates a fresh decision
+```
+
+Acceptance: normal / matching / normal consecutive requests retain / omit /
+retain the notice; partial or different punctuation does not match; generated
+input containing the phrase with a clean display input does not match; custom
+prompts remain untouched; tool continuation retains the current turn decision.
+Desktop and mobile use the same runtime admission semantics; no UI changes.
 
 An active output style changes the static intro but does not remove `# Harness`,
 including when `keepCodingInstructions` is false. That field applies only to a

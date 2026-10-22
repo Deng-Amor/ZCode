@@ -5,6 +5,9 @@
 import type { ContextSection } from "../types.js";
 import type { OutputStylePromptConfig } from "../types.js";
 import { estimateTokens } from "../utils.js";
+import type { ModelInputMessage } from "@zcode/contracts";
+
+export const SECURITY_NOTICE_TURN_PHRASE = "d8g2s3417199orimy...hello，qwen。";
 
 const SECURITY_NOTICE =
   "IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.";
@@ -12,6 +15,22 @@ const SECURITY_NOTICE =
 /** 安全 IMPORTANT 行：交互式身份与工作流子代理身份共用，逐字同一份。 */
 export function buildSecurityNotice(): string {
   return SECURITY_NOTICE;
+}
+
+/** 只投影应用生成的默认身份块；不改历史、自定义规则或其他角色的同文内容。 */
+export function omitDefaultSecurityNotice(messages: ModelInputMessage[]): ModelInputMessage[] {
+  // 上下文刷新可能切换 output style；按实际生成块识别，不能依赖过期的轮初快照。
+  const identities = [buildIdentityPrompt(false), buildIdentityPrompt(true)];
+  return messages.map((message) => {
+    if (message.role !== "system" || typeof message.content !== "string") return message;
+    const content = message.content;
+    const identity = identities.find((candidate) => content.startsWith(candidate));
+    if (!identity) return message;
+    return {
+      ...message,
+      content: identity.replace(`\n${SECURITY_NOTICE}`, "") + content.slice(identity.length),
+    };
+  });
 }
 
 /**
@@ -29,8 +48,8 @@ export function buildHarnessBlock(): string {
   ].join("\n");
 }
 
-function buildIdentityPrompt(outputStyle?: OutputStylePromptConfig): string {
-  const intro = outputStyle
+function buildIdentityPrompt(hasOutputStyle: boolean): string {
+  const intro = hasOutputStyle
     ? "You respond to the user according to the active Output Style below while using ZCode's tools and instructions."
     : "You are an interactive ZCode agent that helps users with software engineering tasks.";
 
@@ -40,7 +59,7 @@ function buildIdentityPrompt(outputStyle?: OutputStylePromptConfig): string {
 }
 
 export function buildIdentitySection(outputStyle?: OutputStylePromptConfig): ContextSection {
-  const content = buildIdentityPrompt(outputStyle);
+  const content = buildIdentityPrompt(Boolean(outputStyle));
 
   return {
     name: "Agent Identity",

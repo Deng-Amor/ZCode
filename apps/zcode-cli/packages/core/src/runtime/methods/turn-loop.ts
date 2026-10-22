@@ -1,4 +1,5 @@
 import { getTurnTools } from "./turn-tool-visibility.js";
+import { omitDefaultSecurityNotice } from "../../context/sections/identity.js";
 import { refreshOffPeakTurnAfterTakeover } from "../off-peak/turn.js";
 import { appendRuntimeAgentListing } from "../helpers/agent-listing.js";
 import { beginLocalTurnPreparation } from "@zcode/contracts";
@@ -230,7 +231,9 @@ export async function runRegularTurnLoop(
     // 修复原因：provider-visible user ordering projection 会改变最终 latest user 落点，
     // cache-control 必须在 projection 后统一设置，避免 raw synthetic entry 抢占缓存锚点。
     const providerProjection = prepared.projection;
-    const { messages } = prepared.request;
+    const messages = state.omitSecurityNotice
+      ? omitDefaultSecurityNotice(prepared.request.messages)
+      : prepared.request.messages;
     const recordableEntries = filterOutputTokenContinuationEntries(prepared.entries);
     const recordableProjection =
       recordableEntries === prepared.entries
@@ -241,10 +244,14 @@ export async function runRegularTurnLoop(
             applyCacheControl: true,
             model: state.model,
           });
+    // 请求和审计使用同一投影；保留 canonical prefix，下一轮无需撤销共享状态。
+    const recordedMessages = state.omitSecurityNotice
+      ? omitDefaultSecurityNotice(recordableProjection.messages)
+      : recordableProjection.messages;
     state.turnMachine = new TurnMachineImpl(
       state.turnMachine.startModelRequest(
         `${state.model.providerId}/${state.model.modelId}`,
-        recordableProjection.messages,
+        recordedMessages,
       ),
     );
 
@@ -265,7 +272,7 @@ export async function runRegularTurnLoop(
       messages,
       sourceEntries: providerProjection.sourceEntries,
       requestEntries,
-      recordedMessages: recordableProjection.messages,
+      recordedMessages,
       tools: prepared.request.tools,
       toolSearch: prepared.toolSearch,
     });
