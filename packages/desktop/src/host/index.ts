@@ -3,7 +3,10 @@ import {
   createControllerPrivateRelay,
   type ControllerPrivateRelay,
 } from "@zcode/services/confidential-controller";
-import { createLockedContentClient } from "@zcode/adapters/confidential-controller";
+// 引叶子模块而非 confidential-controller 包入口：包入口 re-export skill-port 全图
+// （内含 CJS supports-color 等运行时 require("tty")，Electron ESM host 进程启动即崩）。
+// 锁定内容客户端只依赖 zod，可安全内联进 host bundle（0.0.9 真机验收抓出）。
+import { createLockedContentClient } from "@zcode/adapters/confidential-controller/locked-content-client";
 /* eslint-disable max-lines -- Host 入口集中编排 local/remote service wiring，本次退出保护需要在同一处桥接 host 上报。 */
 /* eslint-disable max-lines -- host process 入口集中维护 local/remote 初始化和资源回收，realtime bridge 接入后先保持同文件收口。 */
 /**

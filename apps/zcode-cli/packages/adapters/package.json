@@ -10,6 +10,10 @@
       "types": "./dist/confidential-controller/index.d.ts",
       "import": "./dist/confidential-controller/index.js"
     },
+    "./confidential-controller/locked-content-client": {
+      "types": "./dist/confidential-controller/locked-content-client.d.ts",
+      "import": "./dist/confidential-controller/locked-content-client.js"
+    },
     "./expert-skills": {
       "types": "./dist/expert-skills/index.d.ts",
       "import": "./dist/expert-skills/index.js"

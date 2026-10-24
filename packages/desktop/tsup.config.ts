@@ -364,6 +364,10 @@ export default defineConfig([
       "@zcode/provider",
       "@zcode/provider-node",
       "@zcode/zcode-cua",
+      // host 引用 adapters 的 confidential-controller 客户端（C23R2 锁定内容通道）。
+      // 不列入则 tsup 留成运行时外部依赖，而安装包 asar 不含 workspace 包，
+      // host 进程启动即 ERR_MODULE_NOT_FOUND（0.0.9 首次真机打包验收抓出）。
+      "@zcode/adapters",
     ],
     define: createSharedDefines(),
     // 与 main 保持一致的 chunk 隔离策略，避免 host/main 产物相互覆盖。
