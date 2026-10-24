@@ -1,8 +1,0 @@
-scripts\architecture\architecture-check.mjs:13:import { adoptModule } from "./adopt.mjs";
-scripts\architecture\architecture-check.mjs:34:if (command === "adopt") {
-scripts\architecture\architecture-check.mjs:39:      "ç”¨æ³•: pnpm architecture:adopt <module-id> --root <dir> [--root <dir2>] [--layer domain|app|adapters|ui] [--owner <group>] [--requires a,b]",
-scripts\architecture\architecture-check.mjs:42:  const summary = await adoptModule({
-scripts\architecture\architecture-check.mjs:55:      `adopted: ${summary.id}${summary.registered ? "ï¼ˆæ–°ç™»è®°ï¼‰" : "ï¼ˆå·²å­˜åœ¨ï¼Œç½®ä¸º managedï¼‰"}`,
-FINDSTR: ÎÞ·¨´ò¿ª ;
-FINDSTR: ÎÞ·¨´ò¿ª echo
-FINDSTR: ÎÞ·¨´ò¿ª DONE

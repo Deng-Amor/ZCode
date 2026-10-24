@@ -1,4 +1,0 @@
-
-> @zcode/contracts@0.1.0 typecheck E:\ZCode\apps\zcode-cli\packages\contracts
-> tsc --noEmit
-
