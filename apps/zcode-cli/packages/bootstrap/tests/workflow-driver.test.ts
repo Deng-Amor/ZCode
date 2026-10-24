@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { createTestAgentRuntime } from "./helpers/test-agent-runtime.js";
+import { createTestAgentRuntime, createTestModelFactory } from "./helpers/test-agent-runtime.js";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -25,6 +25,7 @@ import {
   inputHash,
   InMemoryJournalStore,
   refToString,
+  WorkflowError,
   type ActorRef,
   type ActorSessionSeed,
   type WorkflowReportSink,
@@ -435,6 +436,7 @@ describe("workflow driver — resume 会话身份互证", () => {
     concurrencyChanged: () => {},
     stopRun: () => {},
     runStalled: () => {},
+    askStalled: () => {},
   };
 
   function driverWith(journal: InMemoryJournalStore, onFactory?: () => void) {
@@ -672,6 +674,7 @@ describe("workflow driver — 转录截断（会话种子）", () => {
     concurrencyChanged: () => {},
     stopRun: () => {},
     runStalled: () => {},
+    askStalled: () => {},
   };
 
   /** 跑一次源 run，留下一个真实转录 + 它的边界记账。 */
@@ -1100,6 +1103,7 @@ describe("workflow driver — 结算后释放 actor runtime", () => {
     concurrencyChanged: () => {},
     stopRun: () => {},
     runStalled: () => {},
+    askStalled: () => {},
   };
 
   /** 桩 runtime：executeTurn 在 abort 时 reject（模拟被取消的在飞 turn），closeBrowserSession 可被 spy。 */
@@ -1260,4 +1264,112 @@ describe("workflow driver — 结算后释放 actor runtime", () => {
     }
     for (const [key, ref] of refs) expect(ref.deref(), `${key} 仍被某个根引用`).toBeUndefined();
   });
+});
+
+describe("WF4 真实 Engine / harness 单 ask 失败隔离", () => {
+  it.each(["catch", "allSettled", "uncaught"])(
+    "%s：A 恢复耗尽的错误沿 journal 与脚本拒绝通道传播",
+    async (mode) => {
+      const script = [
+        'const a = agent("a", "worker");',
+        'const b = agent("b", "worker");',
+        mode === "catch"
+          ? 'let failure = ""; try { await a.ask("fail"); } catch (e) { failure = (e as { code: string }).code; } return [failure, await b.ask("success")];'
+          : mode === "allSettled"
+            ? 'const outcomes = await Promise.allSettled([a.ask("fail"), b.ask("success")]); return outcomes.map(x => x.status === "fulfilled" ? x.value : x.reason.code);'
+            : 'return await Promise.all([a.ask("fail"), b.ask("wait")]);',
+      ].join("\n");
+      const calls = new Map<string, number>();
+      let siblingAborted = false;
+      const { settlement, journal, events } = await runDriverScript(script, {
+        actorScripts: {},
+        runtimeFactory: ({ sessionId, actor }) => {
+          const key = refToString(actor);
+          return createTestAgentRuntime(
+            sessionId,
+            {
+              mode: "yolo",
+              taskType: "workflow_child",
+              modelStreaming: "on",
+            },
+            {
+              eventStore: createInMemorySessionEventStore(),
+              modelFactory: createTestModelFactory({
+                async *streamText(request) {
+                  calls.set(key, (calls.get(key) ?? 0) + 1);
+                  if (actor.siteId === "actor#1") {
+                    yield { type: "text_delta", text: "partial" };
+                    throw Object.assign(new Error("connection reset"), {
+                      name: "AiSdkModelAdapterError",
+                      code: "model_network_error",
+                      context: { reason: "network_error", retryable: true },
+                    });
+                  }
+                  if (mode === "uncaught") {
+                    await new Promise<void>((_resolve, reject) => {
+                      const abort = () => {
+                        siblingAborted = true;
+                        reject(request.abortSignal?.reason);
+                      };
+                      if (request.abortSignal?.aborted) abort();
+                      else request.abortSignal?.addEventListener("abort", abort, { once: true });
+                    });
+                  }
+                  yield { type: "text_delta", text: "B preserved" };
+                  yield {
+                    type: "finish",
+                    finishReason: "stop",
+                    usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                  };
+                },
+              }),
+            },
+          );
+        },
+      });
+      const a = journal.getNode(RUN, "ask#1", 1);
+      const b = journal.getNode(RUN, "ask#2", 1);
+      expect(a).toMatchObject({ status: "failed", error: { code: "RecoveryExhausted" } });
+      expect(calls.get("actor#1@1")).toBe(11);
+      expect(
+        events.filter((e) => e.type === "node-settled" && e.instance.siteId === "ask#1"),
+      ).toHaveLength(1);
+      const restored = WorkflowError.fromJSON(a!.error!);
+      expect(restored.code).toBe("RecoveryExhausted");
+      expect(restored.toJSON()).toEqual(a!.error);
+      if (mode === "uncaught") {
+        expect(settlement.status).toBe("errored");
+        // 既有 abortInFlight 保留 running 记录供恢复，不把取消伪写为已完成失败。
+        expect(b?.status).toBe("running");
+        expect(events.some((e) => e.type === "node-settled" && e.instance.siteId === "ask#2")).toBe(
+          false,
+        );
+        await vi.waitFor(() => expect(siblingAborted).toBe(true));
+      } else {
+        expect(settlement).toEqual({
+          status: "completed",
+          artifact: ["RecoveryExhausted", "B preserved"],
+        });
+        expect(b).toMatchObject({ status: "completed", result: "B preserved" });
+        expect(calls.get("actor#2@1")).toBe(1);
+        const replay = await runDriverScript(script, {
+          actorScripts: {},
+          journal,
+          runtimeFactory: () => {
+            throw new Error("replay must not construct a runtime");
+          },
+        });
+        expect(replay.settlement).toEqual(settlement);
+        expect(replay.events).toContainEqual(
+          expect.objectContaining({
+            type: "node-settled",
+            cached: true,
+            outcome: "failed",
+            error: expect.objectContaining({ code: "RecoveryExhausted" }),
+          }),
+        );
+      }
+    },
+    30_000,
+  );
 });

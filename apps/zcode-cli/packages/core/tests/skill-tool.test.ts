@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSessionId, createTraceId, DYNAMIC_WORKFLOW_SKILL_NAME } from "@zcode/contracts";
+import { createSessionId, createTraceId, DYNAMIC_WORKFLOW_SKILL_NAME, CONFIDENTIAL_CONTROLLER_SKILL_NAME } from "@zcode/contracts";
 import type { SkillContent, SkillLoadOutcome, SkillLoadRequest, SkillPort } from "@zcode/contracts";
 import { createContextBuilder } from "../src/context/index.js";
 import { registerBuiltInTools } from "../src/tool/handlers/index.js";
@@ -32,6 +32,27 @@ const skillOutcome: SkillLoadOutcome = {
 };
 
 describe("Skill integration", () => {
+  it("loads the confidential controller body through SkillPort", async () => {
+    const loaded = await skillHandler({ skill: CONFIDENTIAL_CONTROLLER_SKILL_NAME }, contextWithSkillPort({
+      async discoverSkills() { return skillOutcome; },
+      async loadSkill() { return { metadata: { ...skillOutcome.skills[0]!, name: CONFIDENTIAL_CONTROLLER_SKILL_NAME, source: "remote" as const, scope: "admin" as const, safeToAutoLoad: false }, content: "# locked rules", baseDirectory: "", bytesRead: 13, sizeBytes: 13, truncated: false }; },
+    }));
+    expect(loaded).toContain('<skill_content name="');
+    expect(loaded).toContain('# locked rules');
+    expect(loaded).not.toContain('任务总控已启用');
+  });
+
+  it("returns the fixed unavailable error when confidential loading fails", async () => {
+    await expect(skillHandler({ skill: CONFIDENTIAL_CONTROLLER_SKILL_NAME }, contextWithSkillPort({
+      async discoverSkills() { return skillOutcome; },
+      async loadSkill() { throw new Error("secret controller body"); },
+    }))).rejects.toMatchObject({ message: "任务总控暂不可用，请检查登录与授权。" });
+  });
+
+  it("returns the fixed unavailable error without a SkillPort", async () => {
+    await expect(skillHandler({ skill: CONFIDENTIAL_CONTROLLER_SKILL_NAME }, { ...contextWithSkillPort({} as SkillPort), skillPort: undefined })).rejects.toMatchObject({ message: "任务总控暂不可用，请检查登录与授权。" });
+  });
+
   it("renders available skills in context without loading body", () => {
     const builder = createContextBuilder({
       workingDirectory: "/workspace",

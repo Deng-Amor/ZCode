@@ -6,8 +6,14 @@
  * 而 run 的真相在 journal——进度面只是观察面，绝不该有能力终止它。
  */
 
-import type { DynamicWorkflowRunProgressPayload, Logger, SessionId } from "@zcode/contracts";
+import type {
+  DynamicWorkflowRunProgressPayload,
+  Logger,
+  SessionEvent,
+  SessionId,
+} from "@zcode/contracts";
 import type { AgentRuntime } from "@zcode/core";
+import { parseWorkflowRunProgressObservation } from "@zcode/shared/zcode-protocol-v4";
 
 interface DynamicWorkflowRunProgressSinkDeps {
   /** 惰性取 runtime：run service 在 runtime 构造**之前**就已建好（它是 runtime 的依赖之一）。 */
@@ -15,6 +21,8 @@ interface DynamicWorkflowRunProgressSinkDeps {
   /** 本 app 所属会话。run 的 parentSessionId 必须与它相等，见下面的身份闸门。 */
   sessionId: SessionId;
   logger?: Logger;
+  /** protocol 构造时注入同步 store 后交接；非 protocol 的 TUI 保持既有追加合同。 */
+  onWorkflowHostObservationStored?: (storedEvent: SessionEvent) => void;
 }
 
 /**
@@ -47,22 +55,39 @@ export function createDynamicWorkflowRunProgressSink(
     deps.logger?.warn?.(message, {
       event: "dynamic_workflow.run_progress.append_failed",
       module: "bootstrap.app",
-      runId,
+      sessionId: deps.sessionId,
+      runId:
+        typeof runId === "string" && /^[A-Za-z0-9-]{1,128}$/.test(runId) ? runId : "invalid-run-id",
       ...extra,
     });
   };
 
   return (progress, routing) => {
+    const observation = parseWorkflowRunProgressObservation(progress);
+    const failureDiagnostic = (
+      error: unknown,
+      reason: "runtime_unavailable" | "append_rejected",
+    ) => ({
+      reason,
+      // 旧 Engine 诊断合同保留；宿主/非法来源的底层错误可能含输入或凭据，不能原样落日志。
+      ...(observation.kind === "legacy"
+        ? { errorMessage: error instanceof Error ? error.message : String(error) }
+        : { reasonCode: reason, sourceClassification: observation.kind }),
+    });
     const parentSessionId = routing?.parentSessionId;
     // 缺席是合法的（submit 未带 parentSessionId）：本 app 的端口只可能被本会话触达，
     // 所以缺席等价于"就是本会话"。只有**明确不等**才是接线错误。
     if (parentSessionId !== undefined && parentSessionId !== deps.sessionId) {
-      warn("Dynamic workflow run progress dropped: parent session is not this app", progress.runId, {
-        event: "dynamic_workflow.run_progress.session_mismatch",
-        expectedSessionId: deps.sessionId,
-        parentSessionId,
-        reason: "run_parent_session_not_owned_by_this_app",
-      });
+      warn(
+        "Dynamic workflow run progress dropped: parent session is not this app",
+        progress.runId,
+        {
+          event: "dynamic_workflow.run_progress.session_mismatch",
+          expectedSessionId: deps.sessionId,
+          parentSessionId,
+          reason: "run_parent_session_not_owned_by_this_app",
+        },
+      );
       return;
     }
 
@@ -70,19 +95,27 @@ export function createDynamicWorkflowRunProgressSink(
     // （事件库 / 持久化 / sink 扇出）上抛。两者都必须退化成"记一条日志的 no-op"。
     let appended: Promise<void>;
     try {
-      appended = deps.getRuntime().recordDynamicWorkflowRunProgress(progress);
+      const runtime = deps.getRuntime();
+      // protocol 的 hook 必须随首次调用交给 recorder，不能等普通 sink/tail settle 后再装配。
+      // 已选择新路径后的任何故障都不退回旧 recorder，避免生成第二个观察身份。
+      appended =
+        observation.kind === "host-reconciliation" && deps.onWorkflowHostObservationStored
+          ? runtime.recordWorkflowHostObservation(progress, deps.onWorkflowHostObservationStored)
+          : runtime.recordDynamicWorkflowRunProgress(progress);
     } catch (error) {
-      warn("Dynamic workflow run progress append failed", progress.runId, {
-        errorMessage: error instanceof Error ? error.message : String(error),
-        reason: "runtime_unavailable",
-      });
+      warn(
+        "Dynamic workflow run progress append failed",
+        progress.runId,
+        failureDiagnostic(error, "runtime_unavailable"),
+      );
       return;
     }
     void appended.catch((error: unknown) => {
-      warn("Dynamic workflow run progress append failed", progress.runId, {
-        errorMessage: error instanceof Error ? error.message : String(error),
-        reason: "append_rejected",
-      });
+      warn(
+        "Dynamic workflow run progress append failed",
+        progress.runId,
+        failureDiagnostic(error, "append_rejected"),
+      );
     });
   };
 }

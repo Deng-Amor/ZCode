@@ -25,7 +25,8 @@ import { CommandFileParser, type CommandFileFormat } from "./commandFileParser.j
 import { readInstalledPluginRoots } from "#src/plugins/installedPluginRoots.js";
 
 function resolveUserHomeDir() {
-  const envHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
+  // 应用内命令目录与 Agent 保持隔离；不改写外部工具进程的 HOME。
+  const envHome = process.env.ZCODE_DESKTOP_HOME_DIR?.trim() || process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
   return envHome && envHome.length > 0 ? envHome : homedir();
 }
 

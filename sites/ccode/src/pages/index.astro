@@ -1,0 +1,59 @@
+---
+import { fileURLToPath } from 'node:url';
+import Layout from '../layouts/Layout.astro';
+import Headline from '../components/Headline.astro';
+import WidgetWrapper from '../components/WidgetWrapper.astro';
+import WorkspaceDemo from '../components/WorkspaceDemo.astro';
+import Icon from '../components/Icon.astro';
+import { readRelease } from '../../scripts/releases.mjs';
+const release = await readRelease(fileURLToPath(new URL('../../public/', import.meta.url)));
+const size = release ? `${(release.size / 1024 / 1024).toFixed(1)} MB` : '';
+const faqs = [
+  ['Ccode 是什么？', 'Ccode 是基于 ZCode 定制的 AI 编程工作台。你可以围绕项目描述需求，与 AI 一起阅读文件、修改代码、拆解任务，并查看执行过程。'],
+  ['安装后就能直接使用模型吗？', '需要先在设置中配置模型供应商、API 地址和你自己的凭据。安装包不附带个人 API Key 或模型额度；实际可用模型和费用取决于你选择的供应商。'],
+  ['手机上也能使用吗？', '手机版待开发。目前可以在手机和平板上浏览官网，尚不提供手机安装包。Windows 桌面版请在 Windows 电脑上下载和安装。'],
+  ['会影响我已经安装的 ZCode 吗？', 'CCode 使用独立的安装身份与数据目录，可以与原版并存。使用的是独立的 ccode:// 链接协议；不会把原版的会话自动迁移过来。'],
+  ['如何更新 Ccode？', '当前定制分发版不使用上游自动更新。发布新版后，请从本页下载新的安装包进行更新。更新前建议备份重要项目和配置。'],
+];
+---
+<Layout>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#" aria-label="Ccode 首页"><span class="brand-symbol"><img src="/brand.svg" alt="" width="32" height="24" /></span><span>Ccode<span class="brand-period">.</span></span></a>
+      <nav id="main-navigation" class="main-nav" aria-label="主导航"><a href="#features">产品能力</a><a href="#how-it-works">使用流程</a><a href="#download">下载</a><a href="#faq">常见问题</a></nav>
+      <div class="header-actions"><button class="icon-button theme-toggle" type="button" aria-label="切换明暗主题"><Icon name="moon" /></button><a class="button button-small button-dark header-download desktop-download" href="#download">下载 Ccode <Icon name="arrow" size={16} /></a><button class="icon-button menu-toggle" type="button" aria-label="打开导航菜单" aria-expanded="false" aria-controls="main-navigation"><Icon name="menu" /></button></div>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero">
+      <div class="container">
+        <a class="release-pill" href="#download"><span class="pill-dot"></span><span class="desktop-download">{release ? `Ccode ${release.version} · Windows 版` : '认识 Ccode · AI 编程工作台'}</span><span class="mobile-download">Ccode · 手机版待开发</span><span aria-hidden="true">↗</span></a>
+        <h1>把想法，变成<br /><span class="hero-emphasis">可交付的作品<svg viewBox="0 0 500 18" preserveAspectRatio="none" aria-hidden="true"><path d="M3 12Q230-3 495 8M55 16Q270 5 458 13" /></svg></span><span class="hero-dot">.</span></h1>
+        <p class="hero-description">从第一句需求，到项目的下一步。<br class="mobile-break" />让 Ccode 和你一起，<br class="desktop-break" />把任务拆清楚，把事情做出来。</p>
+        <div class="hero-actions"><a class="button button-primary desktop-download" href="#download"><Icon name="download" />下载 Ccode<span class="button-platform">Windows</span></a><button class="button button-primary mobile-download" type="button" disabled>手机版待开发</button><a class="button button-quiet" href="#product">看看它如何工作 <Icon name="arrow" size={18} /></a></div>
+        <p class="hero-note"><Icon name="check" size={14} /> 独立桌面工作台<span>·</span>自定义模型<span>·</span>围绕项目协作</p>
+      </div>
+      <div class="container product-container" id="product"><WorkspaceDemo /></div>
+    </section>
+    <div class="capability-strip container"><span>一个工作台，让创作连贯发生</span><div><span><Icon name="folder" size={17} />项目上下文</span><span><Icon name="grid" size={17} />任务拆解</span><span><Icon name="code" size={17} />代码协作</span><span><Icon name="spark" size={17} />自定义模型</span></div></div>
+    <WidgetWrapper id="features">
+      <Headline tagline="LESS SWITCHING. MORE CREATING." title="留在创作里，让工作向前。" subtitle="需求、文件和执行过程，在同一个工作台里展开。" />
+      <div class="feature-grid">
+        <article class="feature-card feature-wide"><div class="feature-copy"><span class="feature-index">01 / 从需求开始</span><h3>一句话开始，<br />一步步推进。</h3><p>把目标告诉 Ccode。通过内置的任务拆解流程，明确要做什么、如何推进、怎样验收。</p></div><div class="flow-illustration" aria-label="需求、计划、执行、验收的任务流程"><div><Icon name="spark" /><span>你的想法</span></div><span class="flow-line"></span><div><Icon name="grid" /><span>清晰计划</span></div><span class="flow-line"></span><div class="flow-final"><Icon name="check" /><span>逐步交付</span></div></div></article>
+        <article class="feature-card"><span class="feature-icon"><Icon name="folder" size={24} /></span><span class="feature-index">02 / 围绕项目协作</span><h3>上下文，就在手边。</h3><p>在工作空间里处理文件与代码。让讨论围绕当前项目展开，把执行过程和结果放在一起。</p><div class="file-stack" aria-hidden="true"><span><Icon name="folder" size={16} /> my-project</span><span><Icon name="code" size={16} /> src / index.ts <i>项目文件</i></span><span><Icon name="code" size={16} /> README.md <i>使用说明</i></span></div></article>
+        <article class="feature-card"><span class="feature-icon"><Icon name="spark" size={24} /></span><span class="feature-index">03 / 按你的方式工作</span><h3>模型，由你选择。</h3><p>通过自定义供应商入口配置模型。使用自己的服务与凭据，让工作方式更贴合你的需求。</p><div class="model-illustration" aria-hidden="true"><span>你的供应商</span><Icon name="arrow" size={18} /><b>Ccode</b><span class="model-caption">在设置中连接你的模型服务</span></div></article>
+      </div>
+    </WidgetWrapper>
+    <WidgetWrapper id="how-it-works" class="how-section">
+      <div class="how-layout"><Headline align="left" tagline="YOUR NEXT IDEA STARTS HERE" title="准备好，从一个小想法开始。" subtitle="不必一开始就想好所有细节。先把工作台打开，剩下的逐步展开。" /><ol class="steps"><li><span>01</span><div><h3>下载并安装</h3><p>下载 Windows x64 安装包，在电脑上安装 Ccode。</p></div></li><li><span>02</span><div><h3>连接你的模型</h3><p>打开设置，填写模型供应商、API 地址与自己的凭据。</p></div></li><li><span>03</span><div><h3>打开项目，说出需求</h3><p>选一个工作目录，从具体任务开始，与 Ccode 一起推进。</p></div></li></ol></div>
+    </WidgetWrapper>
+    <WidgetWrapper id="download" class="download-section">
+      <div class="download-panel"><div class="download-intro"><span class="eyebrow">MAKE ROOM FOR YOUR NEXT IDEA</span><h2>下一个作品，<br />从这里开始。</h2><p>把 Ccode 装进你的工作流。</p><div class="download-brand" aria-hidden="true"><img src="/brand.svg" alt="" width="80" height="50" /></div></div><div class="download-card desktop-download"><div class="download-card-heading"><svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M2 4 11 2.8V11H2Zm11-1.5L23 1v10H13ZM2 13h9v8.2L2 20Zm11 0h10v10l-10-1.5Z" /></svg><div><h3>Ccode for Windows</h3><p>Windows · x64</p></div>{release && <span class="version-badge">v{release.version}</span>}</div>
+        {release ? <><p class="download-description">桌面安装版 · {size}<br />使用前需要配置自己的模型服务。</p><a class="button button-primary download-button" href={release.url} download={release.fileName}><Icon name="download" />下载 Windows 版<Icon name="arrow" size={18} /></a><button class="copy-link" type="button" data-copy-url={release.url}><Icon name="copy" size={16} />复制下载链接</button><div class="copy-feedback" hidden><label for="download-url">下载地址</label><input id="download-url" aria-label="下载地址" readonly /><p role="status" data-copy-status></p></div><details class="checksum"><summary>查看文件校验值 <Icon name="plus" size={14} /></summary><p>SHA-256</p><code>{release.sha256}</code></details></> : <><p class="download-description">安装包准备中，发布后将在这里提供下载。</p><button class="button button-primary" disabled>安装包准备中</button></>}
+        <p class="platform-note">当前仅提供 Windows 桌面安装包。<br />手机可以浏览官网，安装请在 Windows 电脑完成。</p>
+      </div><div class="download-card mobile-download mobile-download-card"><div class="download-card-heading"><Icon name="spark" size={32} /><div><h3>Ccode 手机版</h3><p>iOS / Android</p></div></div><p class="download-description">手机版待开发，暂不提供下载安装。<br />你可以继续浏览官网，了解 Ccode。</p><button class="button button-primary download-button" type="button" disabled>手机版待开发</button><p class="platform-note">需要体验桌面版？请在 Windows 电脑上打开本官网。</p></div></div>
+    </WidgetWrapper>
+    <WidgetWrapper id="faq" class="faq-section"><div class="faq-layout"><Headline align="left" tagline="A FEW THINGS TO KNOW" title="开始之前，或许你想知道。" subtitle="关于安装、模型和日常使用。" /><div class="faq-list">{faqs.map(([question, answer]) => <details><summary>{question}<Icon name="plus" size={18} /></summary><p>{answer}</p></details>)}</div></div></WidgetWrapper>
+  </main>
+  <footer class="site-footer"><div class="container footer-top"><a class="brand" href="#"><span class="brand-symbol"><img src="/brand.svg" alt="" width="32" height="24" /></span><span>Ccode<span class="brand-period">.</span></span></a><p>想法值得被实现。</p><a href="#download">开启你的下一次创作 <Icon name="arrow" size={17} /></a></div><div class="container footer-bottom"><span>© {new Date().getFullYear()} 川升AI · Ccode</span><span>基于 ZCode 定制 · <a href="/licenses/ASTROWIND.txt">AstroWind MIT 许可</a></span><a href="#">回到顶部 ↑</a></div></footer>
+</Layout>

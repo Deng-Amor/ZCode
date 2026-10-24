@@ -1,9 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { setDataBaseDir } from "@zcode/services/node";
 
-export function resolveBootstrapSettingsFile(homePath: string = homedir()): string {
+export function resolveBootstrapSettingsFile(
+  homePath: string = process.env.ZCODE_DESKTOP_HOME_DIR?.trim() || homedir(),
+): string {
   return join(homePath, ".zcode", "v2", "setting.json");
 }
 
@@ -41,7 +42,8 @@ export function applyEarlyDataBaseDirBootstrap(): string | null {
   if (dataBaseDir) {
     // 启动早期就把 dataBaseDir 注入进来，避免 logger / crashReporter 先按默认 HOME 建目录，
     // 导致后续再切换到自定义目录时，日志和 crash dump 落在两套路径里。
-    setDataBaseDir(dataBaseDir);
+    // 该模块在 services 首次求值前运行；避免静态导入 services 提前冻结原版用户路径。
+    process.env.ZCODE_DATA_BASE_DIR = dataBaseDir;
   }
   return dataBaseDir;
 }

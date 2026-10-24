@@ -4,6 +4,7 @@
 
 export { WorkflowEngine, type EngineConfig, type RunSettlement } from "./engine.js";
 export { InMemoryJournalStore } from "./journal-memory.js";
+export { createRecoveryUncertainError, findUncertainWorldRun } from "./errors.js";
 export {
   HOLE_PROMPT_MAX_CHARS,
   type FilledHole,
@@ -74,6 +75,7 @@ export {
   type RunRecord,
   type RunSettlementRecord,
   type RunStallInfo,
+  type AskStallInfo,
   type RunStatus,
   type RunStopReason,
   type SessionRef,

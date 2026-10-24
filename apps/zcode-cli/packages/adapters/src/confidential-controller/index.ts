@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { screenControllerOutput } from './output-screen.js';
 import { PrivateControllerError, type PrivateControllerClient, type PrivateControllerCode } from './contract.js';
 export * from './contract.js';
-export { readControllerBootstrap } from './bootstrap.js';
+export { createLockedContentClient, type LockedContentPort } from './locked-content-client.js';
 export { protectControllerModelRequest, privateControllerStatusSink, privateGlobalPromptModelError } from './model-privacy.js';
 export { generateControllerText, streamControllerText } from './model-call.js';
 export { createControllerExecutionScope } from './execution-scope.js';

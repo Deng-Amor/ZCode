@@ -7,7 +7,13 @@
 // 它们只借用 service 的注册表与 journal，经窄依赖递进来；service 文件头的不变式 6、7 仍是它们的规格。
 
 import type { Logger } from "@zcode/contracts";
-import type { JournalStorePort, RunSettlement } from "@zcode/dynamic-workflow";
+import {
+  createRecoveryUncertainError,
+  findUncertainWorldRun,
+  type InstanceRef,
+  type JournalStorePort,
+  type RunSettlement,
+} from "@zcode/dynamic-workflow";
 import {
   TERMINAL_RUN_STATUSES,
   type RunRegistryEntry,
@@ -16,24 +22,33 @@ import {
 /** 终态 run 在内存注册表里的保留条数（产物只在结算里，journal 不存脚本返回值）。 */
 const TERMINAL_REGISTRY_LIMIT = 32;
 
-/** 一个 run 结算后的通知；`liveRunCount` 是通知那一刻本服务名下仍在飞的 run 数。 */
+/** 引擎结算或宿主终态修正后的内部通知；不是协议 run-settled 事件。 */
 export interface DynamicWorkflowRunSettledNotice {
   runId: string;
   liveRunCount: number;
 }
 
+/** Journal/cache 已一致的宿主观察输入，不属于 Engine onRunEvent。 */
+export interface DynamicWorkflowRunReconciledNotice {
+  runId: string;
+  toolCallId?: string;
+  error: { code: "RecoveryUncertain"; message: string };
+}
+
 interface RunServiceLifecycleDeps {
-  /** 只读 `getRun`：外来终态行的判定要看行上的状态。 */
-  journal: Pick<JournalStorePort, "getRun">;
+  journal: Pick<JournalStorePort, "getRun" | "updateRunStatus" | "listNodes">;
   logger?: Logger;
   parentSessionId: string;
   /** 见 service 的 `DynamicWorkflowRunServiceDeps.registerResidencyBlockingWork`（不变式 6）。 */
   registerResidencyBlockingWork?: (work: Promise<unknown>) => void;
   /** service 的注册表本体（不是快照）：结算时淘汰旧终态条目、关闭时枚举在飞条目、留痕时置位标记。 */
   runs: Map<string, RunRegistryEntry>;
+  onRunReconciled?: (notice: DynamicWorkflowRunReconciledNotice) => void;
 }
 
 interface RunServiceLifecycle {
+  /** 未知效果的宿主收敛：持久事实成功后才同步 terminal 缓存与内部通知。 */
+  reconcileUncertainRecovery(runId: string, instance: InstanceRef): void;
   /** 此刻仍未结算的 run 数（registry 里 `terminal === undefined` 的条目）。 */
   countLiveRuns(): number;
   /** 订阅结算通知（簿记之后发；监听器抛错只记日志）。返回退订函数。 */
@@ -99,10 +114,68 @@ export function createRunServiceLifecycle(deps: RunServiceLifecycleDeps): RunSer
   };
 
   const rememberTerminal = (runId: string): void => {
+    if (terminalOrder.includes(runId)) return;
     terminalOrder.push(runId);
     while (terminalOrder.length > TERMINAL_REGISTRY_LIMIT) {
       const evicted = terminalOrder.shift();
       if (evicted !== undefined && runs.get(evicted)?.terminal !== undefined) runs.delete(evicted);
+    }
+  };
+
+  const reconcileUncertainRecovery = (runId: string, instance: InstanceRef): void => {
+    const record = deps.journal.getRun(runId);
+    const entry = runs.get(runId);
+    // owner / live / lineage 先于节点读取，不能替兄弟会话或仍在执行的引擎结算。
+    if (
+      record === undefined ||
+      record.parentSessionId !== deps.parentSessionId ||
+      (entry !== undefined && entry.terminal === undefined) ||
+      record.stopReason === "superseded" ||
+      record.supersededBy !== undefined ||
+      record.status === "completed" ||
+      (record.status === "errored" && record.failure?.code !== "RecoveryUncertain")
+    ) {
+      throw new Error("uncertain recovery requires an owned, inactive, eligible run");
+    }
+    const uncertain = findUncertainWorldRun(
+      deps.journal.listNodes(runId, { kinds: ["world-run"], withResult: false }),
+    );
+    if (uncertain?.siteId !== instance.siteId || uncertain.ordinal !== instance.ordinal) {
+      throw new Error("uncertain recovery requires a matching uncertain world-run");
+    }
+    const error = createRecoveryUncertainError(runId, uncertain);
+    const needsWrite = record.status !== "errored";
+    // 旧 stopped 缓存优先于 journal 读面；写库失败时绝不能先冒报新的终态。
+    if (needsWrite) deps.journal.updateRunStatus(runId, "errored", { failure: error.toJSON() });
+    const needsCacheRepair =
+      entry !== undefined &&
+      (entry.terminal?.status !== "errored" ||
+        entry.terminal.error.code !== error.code ||
+        entry.terminal.error.message !== error.message);
+    if (entry !== undefined && needsCacheRepair) {
+      const terminal: RunSettlement = { status: "errored", error };
+      entry.terminal = terminal;
+      entry.completedAt = new Date();
+      // 已兑现的旧 Promise 不能反向修改；后续读取使用修正后的终态引用。
+      entry.settlement = Promise.resolve(terminal);
+      rememberTerminal(runId);
+    }
+    if (needsWrite || needsCacheRepair) notifySettled(runId);
+    // 独立发布宿主观察：重复拒绝可重发同事实，但不重写 journal 或冒充 Engine 事件。
+    try {
+      deps.onRunReconciled?.({
+        runId,
+        ...(record.toolCallId === undefined ? {} : { toolCallId: record.toolCallId }),
+        error: { code: "RecoveryUncertain", message: error.message },
+      });
+    } catch {
+      deps.logger?.warn?.("Dynamic workflow host observation failed", {
+        event: "dynamic_workflow.run.reconciliation_observation_failed",
+        module: "bootstrap.app",
+        sessionId: deps.parentSessionId,
+        runId: /^[A-Za-z0-9-]{1,128}$/.test(runId) ? runId : "invalid-run-id",
+        reasonCode: "host_observer_failed",
+      });
     }
   };
 
@@ -216,6 +289,7 @@ export function createRunServiceLifecycle(deps: RunServiceLifecycleDeps): RunSer
   };
 
   return {
+    reconcileUncertainRecovery,
     countLiveRuns,
     subscribeRunSettled,
     trackSettlement,

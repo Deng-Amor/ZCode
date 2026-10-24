@@ -13,11 +13,11 @@ const requestId = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const eventSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("invalidated") }),
   z.strictObject({
-    type: z.literal("bootstrap-ready"),
+    type: z.literal("locked-content-ready"),
     requestId,
     version: requestId,
     digest: z.string().regex(/^[a-f0-9]{64}$/),
-    systemPrompt: z.string().max(32 * 1024 * 1024),
+    skillMd: z.string().min(1).max(32 * 1024 * 1024),
   }),
   z.strictObject({
     type: z.literal("ready"),
@@ -53,7 +53,7 @@ interface Peer {
   close(): void;
 }
 interface Call {
-  kind: "bootstrap" | "acquire";
+  kind: "locked-content" | "acquire";
   peer: Peer;
   localId: number;
   phase: "acquiring" | "ready" | "completing" | "cancelling";
@@ -128,9 +128,9 @@ export function createControllerPrivateRelay(upstream: {
       const call = calls.get(event.requestId);
       // Agent取消/退出后Main仍可能完成一个已在途的响应，不能投递给新Agent。
       if (!call) return;
-      if (event.type === "bootstrap-ready") {
+      if (event.type === "locked-content-ready") {
         if (
-          call.kind !== "bootstrap" ||
+          call.kind !== "locked-content" ||
           (call.phase !== "acquiring" && call.phase !== "cancelling")
         ) {
           dispose();
@@ -184,7 +184,7 @@ export function createControllerPrivateRelay(upstream: {
             closePeer(peer);
             return;
           }
-          if (command.type === "acquire" || command.type === "bootstrap") {
+          if (command.type === "acquire" || command.type === "locked-content") {
             if (command.requestId <= peer.lastId) {
               closePeer(peer);
               return;

@@ -10,6 +10,10 @@
       "types": "./dist/confidential-controller/index.d.ts",
       "import": "./dist/confidential-controller/index.js"
     },
+    "./expert-skills": {
+      "types": "./dist/expert-skills/index.d.ts",
+      "import": "./dist/expert-skills/index.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

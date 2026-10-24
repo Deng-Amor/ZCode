@@ -80,7 +80,7 @@ describe("runtime model factory binds admission and retry budget (v3 决策 42)"
     const requests: SeenRequest[] = [];
     const runtime = createTestAgentRuntime(
       createSessionId("runtime-global-prompt-privacy"),
-      { modelSelection, modelStreaming: "off", globalSystemPrompt: "PRIVATE_GLOBAL_SENTINEL" },
+      { modelSelection, modelStreaming: "off" },
       {
         eventStore: createTestSessionEventStore(),
         modelFactory: modelFactoryWithWebSearch(requests),
@@ -89,44 +89,45 @@ describe("runtime model factory binds admission and retry budget (v3 决策 42)"
     await runtime.executeTurn("search");
     expect(requests.length).toBeGreaterThan(1);
     for (const request of requests) {
-      expect(request.metadata).toMatchObject({
-        confidentialController: true,
-        skipTranscript: true,
-      });
+      expect(request.metadata).not.toHaveProperty("confidentialController");
+      expect(request.metadata).not.toHaveProperty("skipTranscript");
     }
     expect(requests.some((request) => request.metadata?.querySource === "web_search_tool")).toBe(
       true,
     );
   });
-  it("WebSearch 工具内部的模型请求带 runtime 的准入端口与 workflow_child 的无上限预算", async () => {
-    const admission = admissionStub();
-    const requests: SeenRequest[] = [];
-    const runtime = createTestAgentRuntime(
-      createSessionId("runtime-admission-websearch"),
-      { modelSelection, modelStreaming: "off", taskType: "workflow_child" },
-      {
-        eventStore: createTestSessionEventStore(),
-        modelRequestAdmission: admission,
-        modelFactory: modelFactoryWithWebSearch(requests),
-      },
-    );
-    await runtime.executeTurn("search");
+  it.each(["workflow_child", "nested_workflow_child"] as const)(
+    "%s 的 WebSearch 工具请求继承有限预算与准入端口",
+    async (taskType) => {
+      const admission = admissionStub();
+      const requests: SeenRequest[] = [];
+      const runtime = createTestAgentRuntime(
+        createSessionId("runtime-admission-websearch"),
+        { modelSelection, modelStreaming: "off", taskType },
+        {
+          eventStore: createTestSessionEventStore(),
+          modelRequestAdmission: admission,
+          modelFactory: modelFactoryWithWebSearch(requests),
+        },
+      );
+      await runtime.executeTurn("search");
 
-    const tool = requests.find(
-      (request) =>
-        (request.metadata as { querySource?: string })?.querySource === "web_search_tool",
-    );
-    const turn = requests.find(
-      (request) =>
-        (request.metadata as { querySource?: string })?.querySource !== "web_search_tool",
-    );
-    expect(tool).toBeDefined();
-    expect(turn).toBeDefined();
-    expect(tool!.modelRequestAdmission).toBe(admission);
-    expect(tool!.modelRetryBudget).toBe("unbounded");
-    expect(turn!.modelRequestAdmission).toBe(admission);
-    expect(turn!.modelRetryBudget).toBe("unbounded");
-  });
+      const tool = requests.find(
+        (request) =>
+          (request.metadata as { querySource?: string })?.querySource === "web_search_tool",
+      );
+      const turn = requests.find(
+        (request) =>
+          (request.metadata as { querySource?: string })?.querySource !== "web_search_tool",
+      );
+      expect(tool).toBeDefined();
+      expect(turn).toBeDefined();
+      expect(tool!.modelRequestAdmission).toBe(admission);
+      expect(tool!.modelRetryBudget).toBe("workflow-finite");
+      expect(turn!.modelRequestAdmission).toBe(admission);
+      expect(turn!.modelRetryBudget).toBe("workflow-finite");
+    },
+  );
 
   it.each([
     ["interactive", "main"],
@@ -189,6 +190,6 @@ describe("runtime model factory binds admission and retry budget (v3 决策 42)"
       },
       () => model.generateText({ messages: [{ role: "user", content: "hi" }] } as never),
     );
-    expect(seen).toEqual([[admission, "unbounded"]]);
+    expect(seen).toEqual([[admission, "workflow-finite"]]);
   });
 });

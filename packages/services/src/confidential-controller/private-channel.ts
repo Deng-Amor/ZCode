@@ -1,6 +1,5 @@
 import {
   ConfidentialControllerError,
-  type ControllerBootstrap,
   type ControllerLease,
   type ControllerPrivateChannel,
   type ControllerPrivateCommand,
@@ -18,7 +17,7 @@ interface PendingCall {
 
 /** One trusted process connection. Holds call correlation only, never task state. */
 export function createControllerPrivateChannel(options: {
-  getBootstrap?(): Promise<ControllerBootstrap>;
+  getLockedContent(): Promise<{ version: number; digest: string; skillMd: string; files: readonly { path: string; bytes: Uint8Array }[] }>;
   acquire?(input: {
     skillId: string;
     version?: number;
@@ -96,15 +95,14 @@ export function createControllerPrivateChannel(options: {
       pending.delete(command.requestId);
     }
   };
-  const runBootstrap = async (
-    command: Extract<ControllerPrivateCommand, { type: "bootstrap" }>,
+  const runLockedContent = async (
+    command: Extract<ControllerPrivateCommand, { type: "locked-content" }>,
     call: PendingCall,
   ) => {
     try {
-      if (!options.getBootstrap) throw new ConfidentialControllerError("UNAVAILABLE");
-      const configuration = await waitForCaller(options.getBootstrap(), call.abort.signal);
+      const configuration = await waitForCaller(options.getLockedContent(), call.abort.signal);
       if (call.abort.signal.aborted) throw new ConfidentialControllerError("CANCELLED");
-      send({ type: "bootstrap-ready", requestId: command.requestId, ...configuration });
+      send({ type: "locked-content-ready", requestId: command.requestId, version: configuration.version, digest: configuration.digest, skillMd: configuration.skillMd });
     } catch (error) {
       send({
         type: "failed",
@@ -124,12 +122,18 @@ export function createControllerPrivateChannel(options: {
     },
     receive(message) {
       if (disposed) return;
+      if (message && typeof message === "object" && (message as { type?: unknown }).type === "bootstrap") {
+        const requestId = (message as { requestId?: unknown }).requestId;
+        if (typeof requestId === "number" && Number.isSafeInteger(requestId) && requestId > 0)
+          send({ type: "failed", requestId, code: "UNAVAILABLE" });
+        return;
+      }
       const command = parseControllerPrivateCommand(message);
       if (!command) {
         dispose();
         return;
       }
-      if (command.type === "acquire" || command.type === "bootstrap") {
+      if (command.type === "acquire" || command.type === "locked-content") {
         if (command.requestId <= lastRequestId) {
           dispose();
           return;
@@ -141,7 +145,7 @@ export function createControllerPrivateChannel(options: {
         }
         const call: PendingCall = { abort: new AbortController() };
         pending.set(command.requestId, call);
-        if (command.type === "bootstrap") void runBootstrap(command, call);
+        if (command.type === "locked-content") void runLockedContent(command, call);
         else void run(command, call);
       } else {
         const call = pending.get(command.requestId);
@@ -183,7 +187,7 @@ export function parseControllerPrivateCommand(
     };
   }
   if (
-    (command.type === "bootstrap" || command.type === "complete" || command.type === "cancel") &&
+    (command.type === "locked-content" || command.type === "complete" || command.type === "cancel") &&
     Object.keys(command).every((key) => key === "type" || key === "requestId")
   )
     return { type: command.type, requestId: command.requestId };

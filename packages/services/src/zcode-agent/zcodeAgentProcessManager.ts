@@ -72,6 +72,7 @@ export type ZCodeAgentCommandResolver = (
 
 export interface ZCodeAgentProcessManagerOptions {
   createControllerPrivateChannel?: ControllerPrivateChannelFactory;
+  confidentialControllerLockedContent?: { load(): Promise<{ version: number; digest: string; skillMd: string; files: readonly { path: string; bytes: Uint8Array }[] }> };
   commandResolver?: ZCodeAgentCommandResolver;
   presentationSurface?: ZCodeAgentPresentationSurface;
   requestTimeoutMs?: number;
@@ -609,6 +610,9 @@ export class ZCodeAgentProcessManager {
   private readonly presentationSurface: ZCodeAgentProcessManagerOptions["presentationSurface"];
   private readonly requestTimeoutMs: number | undefined;
   private readonly createControllerPrivateChannel: ControllerPrivateChannelFactory | undefined;
+  private readonly confidentialControllerLockedContent:
+    | ZCodeAgentProcessManagerOptions["confidentialControllerLockedContent"]
+    | undefined;
   private readonly processLifecycleReporter: RuntimeProcessLifecycleReporter | undefined;
   private readonly resolveSpawnEnv: ZCodeAgentProcessManagerOptions["resolveSpawnEnv"];
   private readonly waitForSpawnAdmission: ZCodeAgentProcessManagerOptions["waitForSpawnAdmission"];
@@ -630,6 +634,7 @@ export class ZCodeAgentProcessManager {
     this.presentationSurface = options?.presentationSurface;
     this.requestTimeoutMs = options?.requestTimeoutMs;
     this.createControllerPrivateChannel = options?.createControllerPrivateChannel;
+    this.confidentialControllerLockedContent = options?.confidentialControllerLockedContent;
     this.processLifecycleReporter = options?.processLifecycleReporter;
     this.resolveSpawnEnv = options?.resolveSpawnEnv;
     this.waitForSpawnAdmission = options?.waitForSpawnAdmission;
@@ -1073,6 +1078,9 @@ export class ZCodeAgentProcessManager {
     const controllerChannelFactory = effectiveCommand.supportsConfidentialControllerIpc
       ? this.createControllerPrivateChannel
       : undefined;
+    const lockedContentIpc =
+      effectiveCommand.supportsConfidentialControllerIpc &&
+      this.confidentialControllerLockedContent !== undefined;
     const child = spawn(effectiveCommand.command, spawnPreflight.args, {
       cwd: spawnPreflight.cwd,
       // agent 可能再派生实际 runtime/MCP 子进程。POSIX 下让 wrapper 进入独立进程组，
@@ -1089,7 +1097,7 @@ export class ZCodeAgentProcessManager {
         ...buildAgentWorkspaceIdentityEnv(params.workspaceIdentity),
         ...buildE2EAgentCoverageEnv(),
         // 只由本次 spawn 决定能力，禁止继承父进程或自定义命令的残留标记。
-        ZCODE_CONFIDENTIAL_CONTROLLER_IPC: controllerChannelFactory ? "1" : undefined,
+        ZCODE_CONFIDENTIAL_CONTROLLER_IPC: controllerChannelFactory || lockedContentIpc ? "1" : undefined,
       },
       stdio: ["pipe", "pipe", "pipe", ...(controllerChannelFactory ? ["ipc" as const] : [])],
       // Node 类型的非空流重载只接受三元素 tuple；这里前三项固定为 pipe。

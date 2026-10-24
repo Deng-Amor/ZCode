@@ -206,7 +206,14 @@ export type DynamicWorkflowRunAmendResult =
       /** 前驱在飞、被本次修订停下时在场（= predecessorRunId）；前驱早已结算则缺席。 */
       supersededRunId?: string;
     }
-  | { ok: false; reason: DynamicWorkflowRunAmendRefusalReason };
+  | { ok: false; reason: DynamicWorkflowRunAmendRefusalReason }
+  | { ok: false; reason: "recovery_uncertain"; uncertainty: DynamicWorkflowRecoveryUncertainty };
+
+/** 外部效果结果未知；仅携带定位标识，调用方必须核实而非自动重放。 */
+export interface DynamicWorkflowRecoveryUncertainty {
+  runId: string;
+  instance: { siteId: string; ordinal: number };
+}
 
 /**
  * 取消的发起方。`user` / `model` 是两条停止入口的 initiator；`{ superseded }` 是 amend 路径
@@ -1103,7 +1110,8 @@ export type DynamicWorkflowRunResumeErrorReason =
  */
 export type DynamicWorkflowRunResumeResult =
   | { ok: true; runId: string; toolCallId?: string }
-  | { ok: false; reason: DynamicWorkflowRunResumeErrorReason; message?: string };
+  | { ok: false; reason: DynamicWorkflowRunResumeErrorReason; message?: string }
+  | { ok: false; reason: "recovery_uncertain"; uncertainty: DynamicWorkflowRecoveryUncertainty };
 
 /**
  * {@link DynamicWorkflowRunPort.listRunsForSession} 的 run 摘要。字面与 journal 的

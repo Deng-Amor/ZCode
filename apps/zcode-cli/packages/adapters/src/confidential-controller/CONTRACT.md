@@ -1,8 +1,9 @@
 # CLI startup controller configuration
 
-The default CCode entry point calls `readControllerBootstrap` once before starting
-the protocol server. A strict `bootstrap-ready` response provides version, digest
-and systemPrompt, which bootstrap passes as `runtimeConfig.globalSystemPrompt`.
+The CCode entry point loads locked controller content on demand through
+`createLockedContentClient`. A strict `locked-content-ready` response provides
+version, digest and the SKILL.md body, which the protected SkillPort returns for
+the current model context.
 There is no model-time acquire/complete, lease expiry or renewal. The transport is
 dedicated Node IPC, never normal stdio, renderer RPC, environment or argv. Invalid
 responses, disconnect, caller cancellation and a 30-second startup timeout reject

@@ -3,6 +3,7 @@ import {
   createControllerPrivateRelay,
   type ControllerPrivateRelay,
 } from "@zcode/services/confidential-controller";
+import { createLockedContentClient } from "@zcode/adapters/confidential-controller";
 /* eslint-disable max-lines -- Host 入口集中编排 local/remote service wiring，本次退出保护需要在同一处桥接 host 上报。 */
 /* eslint-disable max-lines -- host process 入口集中维护 local/remote 初始化和资源回收，realtime bridge 接入后先保持同文件收口。 */
 /**
@@ -3796,6 +3797,25 @@ parentPort.on("message", async (e: Electron.MessageEvent) => {
           log: (message, details) => logger.warn(message, details),
           establishOwner: () => {
             const initializedServices = createLocalServices({
+              confidentialControllerLockedContent: (() => {
+                const makePort = () => {
+                  let onMessage: ((event: unknown) => void) | undefined;
+                  let onClose: (() => void) | undefined;
+                  const channel = confidentialControllerRelay?.createChannel({
+                    send: (event) => onMessage?.({ data: event }),
+                    close: () => onClose?.(),
+                  });
+                  return {
+                    on: (event: "message" | "close", listener: (value: unknown) => void) => {
+                      if (event === "message") onMessage = listener;
+                      else onClose = () => listener(undefined);
+                    },
+                    postMessage: (message: unknown) => channel?.receive(message),
+                    start: () => {},
+                  };
+                };
+                return createLockedContentClient(makePort());
+              })(),
               createControllerPrivateChannel: (send, close) => {
                 // 按创建时读取连接，避免服务初始化早于 Main 私有端口交接。
                 if (!confidentialControllerRelay) {

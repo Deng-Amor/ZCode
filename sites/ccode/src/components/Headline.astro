@@ -1,0 +1,10 @@
+---
+// Adapted from AstroWind Headline.astro; MIT (c) 2023 onWidget.
+interface Props { title: string; subtitle?: string; tagline?: string; align?: 'left' | 'center' }
+const { title, subtitle, tagline, align = 'center' } = Astro.props;
+---
+<div class:list={['section-heading', { 'align-left': align === 'left' }]}>
+  {tagline && <p class="eyebrow">{tagline}</p>}
+  <h2>{title}</h2>
+  {subtitle && <p class="section-description">{subtitle}</p>}
+</div>

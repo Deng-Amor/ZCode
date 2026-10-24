@@ -212,29 +212,6 @@ export function toWorkflowError(error: unknown): WorkflowError {
 /** ProviderStop 明细里 provider 原文的上界（通知与 journal 都带它，不能无界）。 */
 export const PROVIDER_STOP_RAW_MESSAGE_MAX_CHARS = 2000;
 
-/** 瞬态重驱的续跑提示（与 nudge 同一机制：同一持久 runtime 上的一轮新 turn）。 */
-export const TRANSIENT_CONTINUE_PROMPT =
-  "The previous model request failed transiently and was abandoned; continue from where you left off.";
-
-const TRANSIENT_BACKOFF_BASE_MS = 2_000;
-const TRANSIENT_BACKOFF_MAX_MS = 60_000;
-
-/** runner 同一条曲线：2s 起翻倍到 60s 封顶，乘 [0.5, 1] 的抖动。 */
-export function transientBackoffMs(attempt: number, random: () => number = Math.random): number {
-  const raw = Math.min(TRANSIENT_BACKOFF_MAX_MS, TRANSIENT_BACKOFF_BASE_MS * 2 ** (attempt - 1));
-  return Math.round(raw * (0.5 + 0.5 * random()));
-}
-
-/** adapter 错误上的 Retry-After（`context.retryAfterMs`，一层 cause 之内），按形状读。 */
-export function readRetryAfterMs(error: unknown): number | undefined {
-  for (const candidate of [error, (error as { cause?: unknown } | undefined)?.cause]) {
-    const context = (candidate as { context?: { retryAfterMs?: unknown } } | undefined)?.context;
-    const value = context?.retryAfterMs;
-    if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
-  }
-  return undefined;
-}
-
 /** 通知文案里子代理的称呼：有名字用名字，否则 `site@ordinal`。 */
 export function subagentLabel(state: Pick<SessionState, "actor" | "actorName">): string {
   return state.actorName ?? refToString(state.actor);

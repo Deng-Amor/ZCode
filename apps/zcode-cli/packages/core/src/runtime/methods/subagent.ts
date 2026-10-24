@@ -290,7 +290,6 @@ export function createDefaultSubagentPort(
             // 非流式请求里也返回 SSE `data:` 帧，generateText 会按普通 JSON 解析并报
             // Invalid JSON response；继承父配置可让子 agent 与主链路走同一 streamText 语义。
             modelStreaming: this.config.modelStreaming,
-            globalSystemPrompt: this.config.globalSystemPrompt,
             bashTimeoutPolicy: this.config.bashTimeoutPolicy,
             midConversationSystem: this.config.midConversationSystem,
             toolSearch: this.config.toolSearch,

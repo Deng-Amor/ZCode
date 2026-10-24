@@ -173,7 +173,6 @@ describe("subagent provider-visible prompt assembly", () => {
       sessionId,
       {
         mode: "build",
-        globalSystemPrompt: "GLOBAL_CHILD_CONTROLLER_SENTINEL",
         modelSelection: createTestModelSelection(createMainModelSelection()),
         bashShellSelection: {
           dialect: "git-bash",
@@ -245,7 +244,7 @@ describe("subagent provider-visible prompt assembly", () => {
     expect(systems[0]).toBe("You are ZCode, an interactive coding agent");
     expect(systems[1]).toMatch(/^\nYou are ZCode Explore/u);
     expect(systems[1]).toContain("READ-ONLY MODE");
-    expect(systems[1]).toContain("GLOBAL_CHILD_CONTROLLER_SENTINEL");
+    expect(systems[1]).not.toContain("GLOBAL_CHILD_CONTROLLER_SENTINEL");
     expect(systems[1]).toContain("\n\nNotes:");
     expect(systems[1]).toContain("Agent threads always have their cwd reset between bash calls");
     expect(systems[1]).toContain("the parent agent reads your text output");

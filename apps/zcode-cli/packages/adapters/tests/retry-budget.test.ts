@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { ModelFailureReason, ModelRetryBudget, type ModelNetworkStatusEvent } from "@zcode/contracts";
+import {
+  ModelFailureReason,
+  ModelRetryBudget,
+  type ModelNetworkStatusEvent,
+} from "@zcode/contracts";
 import type { AiSdkModelRuntime } from "../src/model/runner-runtime.js";
 import { executeAdapterGenerateText, executeAdapterStreamText } from "./test-adapter-model.js";
 import {
@@ -25,6 +29,117 @@ const RETRY = { baseDelayMs: 0, jitter: false, maxAttempts: 3, maxDelayMs: 0 };
 /** 明显超过默认 maxAttempts 的瞬态失败次数，证明预算真的没有上限。 */
 const TRANSIENT_FAILURES_BEYOND_BUDGET = 25;
 
+describe("AiSdkModelAdapter with workflow-finite budget", () => {
+  it.each([
+    ["generate", 2, 2],
+    ["stream", 2, 2],
+    ["generate", undefined, 11],
+    ["stream", undefined, 11],
+  ] as const)(
+    "%s exhausts maxAttempts=%s after %s calls using workflow classification",
+    async (mode, maxAttempts, expectedAttempts) => {
+      let attempts = 0;
+      const events: ModelNetworkStatusEvent[] = [];
+      const busy = () => {
+        attempts += 1;
+        return startPlanBusinessError("3008", "user concurrency limit exceeded");
+      };
+      const adapter = new AiSdkModelAdapter({
+        registry: registry(),
+        retry: {
+          baseDelayMs: 0,
+          jitter: false,
+          maxDelayMs: 0,
+          ...(maxAttempts === undefined ? {} : { maxAttempts }),
+        },
+        runtime: {
+          async generateText() {
+            throw busy();
+          },
+          streamText() {
+            return { fullStream: failingStream(busy()) } as never;
+          },
+        },
+      });
+      const request = {
+        providerId: "test" as never,
+        modelId: "model-a" as never,
+        messages: [{ role: "user" as const, content: "Ping" }],
+        modelRetryBudget: ModelRetryBudget.WorkflowFinite,
+        statusSink: { publish: (event: ModelNetworkStatusEvent) => void events.push(event) },
+      };
+      const consume = async () => {
+        if (mode === "generate") return executeAdapterGenerateText(adapter, request);
+        for await (const _event of executeAdapterStreamText(adapter, request)) {
+          /* consume */
+        }
+      };
+      const error = await consume().catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(AiSdkModelAdapterError);
+      expect((error as AiSdkModelAdapterError).context).toMatchObject({
+        attempt: expectedAttempts,
+        maxAttempts: expectedAttempts,
+        providerCode: "3008",
+      });
+      expect(attempts).toBe(expectedAttempts);
+      const failed = events.filter((event) => event.type === "model_request_failed");
+      expect(failed).toHaveLength(expectedAttempts);
+      expect(failed.slice(0, -1).every((event) => event.retryable)).toBe(true);
+      expect(failed.at(-1)?.retryable).toBe(false);
+      expect(events.filter((event) => event.type === "model_retry_scheduled")).toHaveLength(
+        expectedAttempts - 1,
+      );
+      expect(new Set(events.map((event) => event.maxAttempts))).toEqual(
+        new Set([expectedAttempts]),
+      );
+    },
+  );
+
+  it.each([
+    ["generate", 401, "auth_failed"],
+    ["stream", 401, "auth_failed"],
+    ["generate", 413, "context_exceeded"],
+    ["stream", 413, "context_exceeded"],
+  ] as const)("%s does not retry %s failures", async (mode, statusCode, reason) => {
+    let attempts = 0;
+    const fail = () => {
+      attempts += 1;
+      return apiError(
+        statusCode === 413 ? "context length exceeded" : "provider rejected request",
+        { isRetryable: false, statusCode },
+      );
+    };
+    const adapter = new AiSdkModelAdapter({
+      registry: registry(),
+      retry: RETRY,
+      runtime: {
+        async generateText() {
+          throw fail();
+        },
+        streamText() {
+          return { fullStream: failingStream(fail()) } as never;
+        },
+      },
+    });
+    const request = {
+      providerId: "test" as never,
+      modelId: "model-a" as never,
+      messages: [{ role: "user" as const, content: "Ping" }],
+      modelRetryBudget: ModelRetryBudget.WorkflowFinite,
+    };
+    const consume = async () => {
+      if (mode === "generate") return executeAdapterGenerateText(adapter, request);
+      for await (const _event of executeAdapterStreamText(adapter, request)) {
+        /* consume */
+      }
+    };
+    const error = await consume().catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(AiSdkModelAdapterError);
+    expect((error as AiSdkModelAdapterError).context).toMatchObject({ reason });
+    expect(attempts).toBe(1);
+  });
+});
+
 describe("retry budget predicates", () => {
   it("default budget keeps the configured attempt gates", () => {
     expect(isUnboundedRetryBudget(undefined)).toBe(false);
@@ -40,7 +155,9 @@ describe("retry budget predicates", () => {
     expect(isUnboundedRetryBudget(ModelRetryBudget.Unbounded)).toBe(true);
     expect(retryBudgetAllows(ModelRetryBudget.Unbounded, 1_000, 3)).toBe(true);
     expect(retryAttemptLoopContinues(ModelRetryBudget.Unbounded, 1_000, 3)).toBe(true);
-    expect(retryBudgetMaxAttempts(ModelRetryBudget.Unbounded, 11)).toBe(UNBOUNDED_RETRY_MAX_ATTEMPTS);
+    expect(retryBudgetMaxAttempts(ModelRetryBudget.Unbounded, 11)).toBe(
+      UNBOUNDED_RETRY_MAX_ATTEMPTS,
+    );
     expect(UNBOUNDED_RETRY_MAX_ATTEMPTS).toBe(0);
   });
 
@@ -63,9 +180,9 @@ describe("retry budget predicates", () => {
     expect(
       retryAttemptLoopContinues(ModelRetryBudget.SingleAttempt, 2, SINGLE_ATTEMPT_MAX_ATTEMPTS),
     ).toBe(false);
-    expect(retryBudgetMaxAttempts(ModelRetryBudget.SingleAttempt, SINGLE_ATTEMPT_MAX_ATTEMPTS)).toBe(
-      1,
-    );
+    expect(
+      retryBudgetMaxAttempts(ModelRetryBudget.SingleAttempt, SINGLE_ATTEMPT_MAX_ATTEMPTS),
+    ).toBe(1);
   });
 });
 
@@ -117,7 +234,9 @@ describe("AiSdkModelAdapter with modelRetryBudget = single-attempt", () => {
         streamText() {
           attempts += 1;
           return {
-            fullStream: failingStream(apiError("overloaded", { isRetryable: true, statusCode: 529 })),
+            fullStream: failingStream(
+              apiError("overloaded", { isRetryable: true, statusCode: 529 }),
+            ),
           } as never;
         },
       },
@@ -185,8 +304,11 @@ describe("AiSdkModelAdapter with modelRetryBudget = unbounded", () => {
       }),
     });
     await expect(
-      executeAdapterGenerateText(adapter, { providerId: "test" as never,
-      modelId: "model-a" as never, messages: [{ role: "user", content: "Ping" }] }),
+      executeAdapterGenerateText(adapter, {
+        providerId: "test" as never,
+        modelId: "model-a" as never,
+        messages: [{ role: "user", content: "Ping" }],
+      }),
     ).rejects.toBeInstanceOf(AiSdkModelAdapterError);
     expect(attempts).toBe(RETRY.maxAttempts);
   });
@@ -202,15 +324,14 @@ describe("AiSdkModelAdapter with modelRetryBudget = unbounded", () => {
       }),
     });
     const rejection = await executeAdapterGenerateText(adapter, {
-        providerId: "test" as never,
-        modelId: "model-a" as never,
-        messages: [{ role: "user", content: "Ping" }],
-        modelRetryBudget: ModelRetryBudget.Unbounded,
-      })
-      .then(
-        () => undefined,
-        (error: unknown) => error,
-      );
+      providerId: "test" as never,
+      modelId: "model-a" as never,
+      messages: [{ role: "user", content: "Ping" }],
+      modelRetryBudget: ModelRetryBudget.Unbounded,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
     expect(rejection).toBeInstanceOf(AiSdkModelAdapterError);
     expect((rejection as AiSdkModelAdapterError).context).toMatchObject({
       reason: ModelFailureReason.AuthFailed,
@@ -253,7 +374,7 @@ describe("AiSdkModelAdapter with modelRetryBudget = unbounded", () => {
       new Set(scheduled.map((event) => event.type === "model_retry_scheduled" && event.reason)),
     ).toEqual(new Set(["rate_limited"]));
 
-    // 有界预算逐字不变：同一个 3008 仍然一次就放弃。
+    // 普通默认预算逐字不变：同一个 3008 仍然一次就放弃。
     let boundedAttempts = 0;
     const bounded = new AiSdkModelAdapter({
       registry: registry(),
@@ -343,36 +464,38 @@ describe("AiSdkModelAdapter with modelRetryBudget = unbounded", () => {
     expect(statusEvents.filter((event) => event.type === "model_retry_scheduled")).toHaveLength(5);
   });
 
-  it("generateText backoff sleep is interrupted by the abort signal", async () => {
-    let attempts = 0;
-    const controller = new AbortController();
-    const adapter = new AiSdkModelAdapter({
-      registry: registry(),
-      // 退避 1s：只有 cancel 才能在测试超时之前结束这次调用。
-      retry: { baseDelayMs: 1_000, jitter: false, maxAttempts: 3, maxDelayMs: 1_000 },
-      runtime: generateRuntime(async () => {
-        attempts += 1;
-        queueMicrotask(() => controller.abort(new Error("workflow ask cancelled")));
-        throw apiError("overloaded", { isRetryable: true, statusCode: 529 });
-      }),
-    });
-    const rejection = await executeAdapterGenerateText(adapter, {
+  it.each([ModelRetryBudget.Unbounded, ModelRetryBudget.WorkflowFinite])(
+    "%s generateText backoff sleep is interrupted by the abort signal",
+    async (budget) => {
+      let attempts = 0;
+      const controller = new AbortController();
+      const adapter = new AiSdkModelAdapter({
+        registry: registry(),
+        // 退避 1s：只有 cancel 才能在测试超时之前结束这次调用。
+        retry: { baseDelayMs: 1_000, jitter: false, maxAttempts: 3, maxDelayMs: 1_000 },
+        runtime: generateRuntime(async () => {
+          attempts += 1;
+          queueMicrotask(() => controller.abort(new Error("workflow ask cancelled")));
+          throw apiError("overloaded", { isRetryable: true, statusCode: 529 });
+        }),
+      });
+      const rejection = await executeAdapterGenerateText(adapter, {
         providerId: "test" as never,
         modelId: "model-a" as never,
         messages: [{ role: "user", content: "Ping" }],
-        modelRetryBudget: ModelRetryBudget.Unbounded,
+        modelRetryBudget: budget,
         abortSignal: controller.signal,
-      })
-      .then(
+      }).then(
         () => undefined,
         (error: unknown) => error,
       );
-    expect(rejection).toBeInstanceOf(AiSdkModelAdapterError);
-    expect((rejection as AiSdkModelAdapterError).context).toMatchObject({
-      reason: ModelFailureReason.Cancelled,
-    });
-    expect(attempts).toBe(1);
-  });
+      expect(rejection).toBeInstanceOf(AiSdkModelAdapterError);
+      expect((rejection as AiSdkModelAdapterError).context).toMatchObject({
+        reason: ModelFailureReason.Cancelled,
+      });
+      expect(attempts).toBe(1);
+    },
+  );
 
   it("streamText keeps retrying transient failures before any visible output", async () => {
     let attempts = 0;
@@ -388,7 +511,9 @@ describe("AiSdkModelAdapter with modelRetryBudget = unbounded", () => {
           attempts += 1;
           if (attempts <= TRANSIENT_FAILURES_BEYOND_BUDGET) {
             return {
-              fullStream: failingStream(apiError("overloaded", { isRetryable: true, statusCode: 503 })),
+              fullStream: failingStream(
+                apiError("overloaded", { isRetryable: true, statusCode: 503 }),
+              ),
             } as never;
           }
           return {
@@ -417,40 +542,56 @@ describe("AiSdkModelAdapter with modelRetryBudget = unbounded", () => {
     expect(new Set(statusEvents.map((event) => event.maxAttempts))).toEqual(new Set([0]));
   });
 
-  it("streamText still does not retry once visible output has been emitted (决策 25)", async () => {
-    let attempts = 0;
-    const adapter = new AiSdkModelAdapter({
-      registry: registry(),
-      retry: RETRY,
-      runtime: {
-        generateText() {
-          throw new Error("not used");
+  it.each([ModelRetryBudget.Unbounded, ModelRetryBudget.WorkflowFinite])(
+    "%s streamText does not replay visible output (决策 25)",
+    async (budget) => {
+      let attempts = 0;
+      const statusEvents: ModelNetworkStatusEvent[] = [];
+      const adapter = new AiSdkModelAdapter({
+        registry: registry(),
+        retry: RETRY,
+        statusSink: {
+          publish: (event) => {
+            statusEvents.push(event);
+          },
         },
-        streamText() {
-          attempts += 1;
-          return {
-            fullStream: streamThenFail(
-              [{ type: "text-delta", id: "text-1", text: "partial" }],
-              apiError("connection reset", { isRetryable: true, statusCode: 503 }),
-            ),
-          } as never;
+        runtime: {
+          generateText() {
+            throw new Error("not used");
+          },
+          streamText() {
+            attempts += 1;
+            return {
+              fullStream: streamThenFail(
+                [{ type: "text-delta", id: "text-1", text: "partial" }],
+                apiError("connection reset", { isRetryable: true, statusCode: 503 }),
+              ),
+            } as never;
+          },
         },
-      },
-    });
+      });
 
-    const consume = async (): Promise<void> => {
-      for await (const _event of executeAdapterStreamText(adapter, {
-        providerId: "test" as never,
-        modelId: "model-a" as never,
-        messages: [{ role: "user", content: "Ping" }],
-        modelRetryBudget: ModelRetryBudget.Unbounded,
-      })) {
-        // 只消费到失败。
-      }
-    };
-    await expect(consume()).rejects.toBeInstanceOf(AiSdkModelAdapterError);
-    expect(attempts).toBe(1);
-  });
+      const consume = async (): Promise<void> => {
+        for await (const _event of executeAdapterStreamText(adapter, {
+          providerId: "test" as never,
+          modelId: "model-a" as never,
+          messages: [{ role: "user", content: "Ping" }],
+          modelRetryBudget: budget,
+        })) {
+          // 只消费到失败。
+        }
+      };
+      await expect(consume()).rejects.toBeInstanceOf(AiSdkModelAdapterError);
+      expect(attempts).toBe(1);
+      expect(statusEvents.map((event) => event.type)).toEqual([
+        "model_request_started",
+        "model_first_provider_event",
+        "model_first_content",
+        "model_first_text",
+        "model_request_failed",
+      ]);
+    },
+  );
 });
 
 function registry(): TestProviderConfigFixture {

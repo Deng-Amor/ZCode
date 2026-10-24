@@ -5,6 +5,12 @@ export interface PrivateControllerContent {
   readonly signal: AbortSignal;
 }
 
+/** 锁定内容端口：Main 侧由 controller-locked-store 适配注入；解密与 digest 复核在存储层完成。 */
+export interface ControllerLockedContentPort {
+  load(): Promise<{ version: number; digest: string; skillMd: string;
+    files: readonly { path: string; bytes: Uint8Array }[] }>;
+}
+
 export interface PrivateControllerClient {
   /** Consumer must return a plain JSON tree and buffer output without side effects until resolution.
    * Non-JSON values, accessors, repeated object references and excessive depth/size are rejected.

@@ -52,7 +52,7 @@ function buildSkillsContent(skills: SkillMetadata[], budget: number): string {
   }
 
   const namesOnly = sortedSkills.map(
-    (skill) => `- ${skillDisplayName(skill)}${bareAliasSuffix(skill)} (file: ${skill.path})`,
+    (skill) => `- ${skillDisplayName(skill)}${bareAliasSuffix(skill)}${skillLocation(skill)}`,
   );
   return [...lines, ...namesOnly].join("\n");
 }
@@ -65,7 +65,11 @@ function formatSkillLine(skill: SkillMetadata, maxDescriptionChars: number): str
     description.length > maxDescriptionChars
       ? `${description.slice(0, maxDescriptionChars - 1)}...`
       : description;
-  return `- ${skillDisplayName(skill)}: ${trimmed}${bareAliasSuffix(skill)} (file: ${skill.path})`;
+  return `- ${skillDisplayName(skill)}: ${trimmed}${bareAliasSuffix(skill)}${skillLocation(skill)}`;
+}
+
+function skillLocation(skill: SkillMetadata): string {
+  return skill.path ? ` (file: ${skill.path})` : '';
 }
 
 function skillDisplayName(skill: SkillMetadata): string {

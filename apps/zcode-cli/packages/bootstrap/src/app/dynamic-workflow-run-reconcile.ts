@@ -6,7 +6,13 @@
 // dynamic-workflow-run-service.ts 导出。语义见那边文件头的不变式 4。
 
 import type { Logger } from "@zcode/contracts";
-import type { JournalStorePort, RunRecord, WorkflowErrorJson } from "@zcode/dynamic-workflow";
+import {
+  findUncertainWorldRun,
+  type InstanceRef,
+  type JournalStorePort,
+  type RunRecord,
+  type WorkflowErrorJson,
+} from "@zcode/dynamic-workflow";
 import { supportsNonTerminalRunQuery } from "./dynamic-workflow-run-journal.js";
 import {
   INTERRUPTED_FAILURE_CODE,
@@ -22,6 +28,7 @@ interface DynamicWorkflowOrphanReconcileDeps {
   journal: JournalStorePort;
   parentSessionId: string;
   logger?: Logger;
+  reconcileUncertainRecovery(runId: string, instance: InstanceRef): void;
 }
 
 /**
@@ -82,8 +89,23 @@ export function reconcileOrphanRuns(deps: DynamicWorkflowOrphanReconcileDeps): v
 
   for (const record of orphans) {
     // 终态判定的权威在本文件（TERMINAL_RUN_STATUSES）：journal 的 status 过滤只是预筛。
-    if (TERMINAL_RUN_STATUSES.has(record.status)) continue;
+    if (record.parentSessionId !== parentSessionId || TERMINAL_RUN_STATUSES.has(record.status))
+      continue;
     try {
+      const uncertain = findUncertainWorldRun(
+        journal.listNodes(record.runId, { kinds: ["world-run"], withResult: false }),
+      );
+      if (uncertain !== undefined) {
+        // 未知外部效果不能按普通 interrupted 重放；唯一 lifecycle owner 负责持久化及缓存。
+        deps.reconcileUncertainRecovery(record.runId, uncertain);
+        logger?.warn?.("Dynamic workflow run reconciled as recovery uncertain", {
+          event: "dynamic_workflow.run.reconciled_uncertain",
+          module: "bootstrap.app",
+          previousStatus: record.status,
+          runId: record.runId,
+        });
+        continue;
+      }
       // stopped(interrupted)：可恢复，且与用户
       // 取消 / 模型侧停止分辨得开——reason 说「进程死了」，code 是同一事实的第二证据。
       journal.updateRunStatus(record.runId, "stopped", {

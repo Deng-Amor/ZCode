@@ -4,19 +4,23 @@
  *   - per-actor `ModelRequestAdmission`：tryAcquire = tryAdmit；未命中由 runner 发 queued 事件、这里排队 admit；
  *   - actor runtime 的 ModelNetworkStatus 会话事件按请求链聚合 → askExecuting / askWaiting(slot | backoff)；
  *   - 模型侧错误的收容（apps/zcode-cli/packages/dynamic-workflow/docs/execution-engine.md）：确定性错误 → stopRun(ProviderStop)；
- *     context_exceeded → ContextLimit；瞬态 → 退避后续跑；非模型错误 → DriverError；
+ *     context_exceeded → ContextLimit；瞬态 → RecoveryExhausted；非模型错误 → DriverError；
  *   - run 级 stall 时钟（决策 4）：20 分钟无一次成功 → runStalled 恰好一次；
  *   - 端口缺席即 runtimeFactory 不收 admission。
  * 用最小 stub runtime（可控 executeTurn + 可注入会话事件），不跑真模型。
  */
 
 import { describe, expect, it, vi } from "vitest";
+import { createInMemorySessionEventStore } from "@zcode/adapters/storage";
+import { createTestAgentRuntime, createTestModelFactory } from "./helpers/test-agent-runtime.js";
+import { createToolRegistry } from "@zcode/core";
 import {
   SessionEventType,
   type ModelRequestAdmission,
   type ModelRequestAdmissionTicket,
   type SessionEvent,
   type SessionEventSink,
+  type WorkflowEscalatePort,
 } from "@zcode/contracts";
 import {
   InMemoryJournalStore,
@@ -35,6 +39,7 @@ import {
   WORKFLOW_STALL_NOTIFY_AFTER_MS,
 } from "../src/app/workflow-driver-concurrency.js";
 import type { WorkflowConcurrencyPort } from "../src/app/workflow-concurrency-governor.js";
+import type { ActorTranscriptStore } from "../src/app/workflow-actor-transcript.js";
 import { fakeFileSystemPort, unsupportedExecutionPort } from "./workflow-driver.helpers.js";
 
 const RUN = "run-cc";
@@ -101,6 +106,7 @@ function recordingSink() {
     concurrency: [] as ConcurrencyChange[],
     stopped: [] as WorkflowError[],
     stalled: [] as RunStallInfo[],
+    askStalled: [] as Array<{ instance: InstanceRef; info: RunStallInfo }>,
   };
   const sink: WorkflowReportSink = {
     askSubmitAttempted: () => {},
@@ -114,6 +120,7 @@ function recordingSink() {
     concurrencyChanged: (change) => calls.concurrency.push(change),
     stopRun: (error) => calls.stopped.push(error),
     runStalled: (info) => calls.stalled.push(info),
+    askStalled: (instance, info) => calls.askStalled.push({ instance, info }),
   };
   return { sink, calls };
 }
@@ -192,8 +199,10 @@ function fakePort() {
 
 function makeDriver(input: {
   runtime: ReturnType<typeof stubRuntime>;
+  otherRuntime?: ReturnType<typeof stubRuntime>;
   concurrency?: WorkflowConcurrencyPort;
   clock?: ReturnType<typeof fakeClock>["clock"] & { stallAfterMs?: number; random?: () => number };
+  actorTranscriptStore?: ActorTranscriptStore;
 }) {
   const { sink, calls } = recordingSink();
   const journal = new InMemoryJournalStore();
@@ -203,24 +212,36 @@ function makeDriver(input: {
     spentTokens: 0,
     status: "running",
   });
-  const factoryInputs: Array<{ modelRequestAdmission?: ModelRequestAdmission }> = [];
+  const factoryInputs: Array<{
+    modelRequestAdmission?: ModelRequestAdmission;
+    escalatePort: WorkflowEscalatePort;
+  }> = [];
+  const escalationRegistry = createWorkflowEscalationRegistry();
   const driver = createAgentRuntimeWorkflowDriver({
     journal,
     emit: () => {},
-    escalationRegistry: createWorkflowEscalationRegistry(),
+    escalationRegistry,
     executionPort: unsupportedExecutionPort(),
     fileSystemPort: fakeFileSystemPort({}),
     cwd: process.cwd(),
     runId: RUN,
     ...(input.concurrency === undefined ? {} : { concurrency: input.concurrency }),
     ...(input.clock === undefined ? {} : { clock: input.clock }),
-    runtimeFactory: ({ sessionId, modelRequestAdmission }) => {
-      factoryInputs.push(modelRequestAdmission === undefined ? {} : { modelRequestAdmission });
-      input.runtime.bind(sessionId);
-      return input.runtime as never;
+    ...(input.actorTranscriptStore === undefined
+      ? {}
+      : { actorTranscriptStore: input.actorTranscriptStore }),
+    runtimeFactory: ({ sessionId, modelRequestAdmission, escalatePort }) => {
+      factoryInputs.push({
+        ...(modelRequestAdmission === undefined ? {} : { modelRequestAdmission }),
+        escalatePort,
+      });
+      const runtime =
+        factoryInputs.length > 1 ? (input.otherRuntime ?? input.runtime) : input.runtime;
+      runtime.bind(sessionId);
+      return runtime as never;
     },
   })(sink);
-  return { driver, calls, factoryInputs };
+  return { driver, calls, factoryInputs, sink, journal, escalationRegistry };
 }
 
 const flush = async (rounds = 8) => {
@@ -442,7 +463,7 @@ describe("workflow driver — per-actor 准入（§4，决策 34/36）", () => {
     const runtime = stubRuntime(() => new Promise(() => {}));
     const { driver, factoryInputs } = makeDriver({ runtime });
     await driver.createActorSession(ACTOR, {});
-    expect(factoryInputs).toEqual([{}]);
+    expect(factoryInputs[0]?.modelRequestAdmission).toBeUndefined();
   });
 });
 
@@ -686,68 +707,29 @@ describe("workflow driver — 模型侧错误的收容（apps/zcode-cli/packages
     expect("providerStop" in calls.failed[0]!.error.toJSON()).toBe(false);
   });
 
-  it("瞬态错误（runner 放过来的残余路径）→ askWaiting(backoff) 后续跑，不结算节点", async () => {
-    const { clock, pending, advanceTo } = fakeClock();
-    let turns = 0;
-    const inputs: string[] = [];
-    const runtime = stubRuntime(() => {
-      turns += 1;
-      return turns === 1
-        ? Promise.reject(adapterError({ reason: "network_error", retryable: true }, "ECONNRESET"))
-        : Promise.resolve({ response: "done", events: [], usage: undefined });
-    });
-    const originalExecute = runtime.executeTurn;
-    runtime.executeTurn = ((input: string, ...rest: unknown[]) => {
-      inputs.push(input);
-      return (originalExecute as (...args: unknown[]) => Promise<unknown>)(input, ...rest);
-    }) as never;
-    const { driver, calls } = makeDriver({ runtime, clock: { ...clock, random: () => 1 } });
-    const session = await driver.createActorSession(ACTOR, {});
-    driver.startAsk(session, INSTANCE, { instructions: "go", typed: false });
-    await flush();
-    // 不结算、不停止：报一条 backoff 等待（attempt 1，2s 曲线起点，无抖动时恰为 2000）。
-    expect(calls.failed).toEqual([]);
-    expect(calls.stopped).toEqual([]);
-    expect(calls.waiting).toEqual([
-      {
-        instance: INSTANCE,
-        info: { cause: "backoff", reason: "network_error", attempt: 1, delayMs: 2000 },
-      },
-    ]);
-    expect(pending()).toHaveLength(1);
-    expect(turns).toBe(1);
-    // 闹钟响：同一持久 runtime 上的一轮续跑 turn。
-    advanceTo(2000);
-    await flush();
-    expect(turns).toBe(2);
-    expect(inputs[1]).toContain("continue from where you left off");
-  });
-
-  it("瞬态错误带 Retry-After 时等它；等待期间 ask 被取消则不再续跑", async () => {
+  it("底层瞬态恢复耗尽只失败一次，不再等待或创建新 turn", async () => {
     const { clock, pending, advanceTo } = fakeClock();
     let turns = 0;
     const runtime = stubRuntime(() => {
-      turns += 1;
-      return Promise.reject(
-        adapterError({ reason: "rate_limited", retryable: true, retryAfterMs: 30_000 }, "429"),
-      );
+      turns++;
+      return Promise.reject(adapterError({ reason: "network_error", retryable: true }));
     });
     const { driver, calls } = makeDriver({ runtime, clock });
     const session = await driver.createActorSession(ACTOR, {});
     driver.startAsk(session, INSTANCE, { instructions: "go", typed: false });
     await flush();
-    expect(calls.waiting[0]!.info).toEqual({
-      cause: "backoff",
-      reason: "rate_limited",
-      attempt: 1,
-      delayMs: 30_000,
-      retryAfterMs: 30_000,
-    });
-    driver.cancelAsk(INSTANCE);
+    expect(calls.failed).toHaveLength(1);
+    driver.respondToSubmit(INSTANCE, { kind: "nudge" });
+    expect(calls.failed[0]?.error).toMatchObject({ code: "RecoveryExhausted" });
+    expect(calls.waiting).toEqual([]);
+    expect(calls.stopped).toEqual([]);
     expect(pending()).toHaveLength(0);
-    advanceTo(60_000);
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS * 3);
     await flush();
     expect(turns).toBe(1);
+    expect(calls.failed).toHaveLength(1);
+    expect(calls.askStalled).toEqual([]);
+    driver.dispose();
   });
 });
 
@@ -876,4 +858,551 @@ describe("workflow driver — askMutating 观察（子代理的第一笔工作�
     runtime.emitToolStarted({ toolName: "Write", readOnly: false, sideEffectScope: "workspace" });
     expect(calls.mutating).toEqual([]);
   });
+});
+
+describe("ask 独立模型重试停滞", () => {
+  const retry = {
+    type: "model_retry_scheduled",
+    reason: "rate_limited",
+    delayMs: 500,
+    nextAttempt: 2,
+    message: "429",
+  };
+  it("A 重试时 B 每分钟成功，20 分钟仅 A 通知一次", async () => {
+    const { clock, advanceTo } = fakeClock();
+    const runtime = stubRuntime(() => new Promise(() => {}));
+    const otherRuntime = stubRuntime(() => new Promise(() => {}));
+    const { driver, calls } = makeDriver({ runtime, otherRuntime, clock });
+    const a = await driver.createActorSession(ACTOR, {});
+    const b = await driver.createActorSession({ siteId: "actor#2", ordinal: 1 }, {});
+    driver.startAsk(a, INSTANCE, { instructions: "A", typed: false });
+    driver.startAsk(b, INSTANCE_2, { instructions: "B", typed: false });
+    runtime.emitStatus(retry);
+    for (let minute = 1; minute < 20; minute++) {
+      advanceTo(minute * 60_000);
+      otherRuntime.emitStatus({ type: "model_request_completed" });
+    }
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS - 1);
+    expect(calls.askStalled).toEqual([]);
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS);
+    expect(calls.askStalled).toEqual([
+      {
+        instance: INSTANCE,
+        info: { sinceMs: WORKFLOW_STALL_NOTIFY_AFTER_MS, reason: "rate_limited" },
+      },
+    ]);
+    expect(calls.stalled).toEqual([]);
+    runtime.emitStatus(retry);
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS * 2);
+    expect(calls.askStalled).toHaveLength(1);
+    driver.dispose();
+  });
+
+  it("自己的成功清段，新重试才能再次上膛", async () => {
+    const { clock, advanceTo } = fakeClock();
+    const runtime = stubRuntime(() => new Promise(() => {}));
+    const { driver, calls } = makeDriver({ runtime, clock });
+    const session = await driver.createActorSession(ACTOR, {});
+    driver.startAsk(session, INSTANCE, { instructions: "A", typed: false });
+    runtime.emitStatus(retry);
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS);
+    expect(calls.askStalled).toHaveLength(1);
+    runtime.emitStatus({ type: "model_request_completed" });
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS * 2);
+    expect(calls.askStalled).toHaveLength(1);
+    runtime.emitStatus(retry);
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS * 2);
+    expect(calls.askStalled).toHaveLength(2);
+    driver.dispose();
+  });
+
+  it.each(["cancel", "accept", "settled-ok", "settled-failed", "dispose"])(
+    "%s 释放时钟，迟到状态与取消回调不能复活",
+    async (end) => {
+      const { clock, advanceTo, state } = fakeClock();
+      const runtime = stubRuntime(() => new Promise(() => {}));
+      const { driver, calls } = makeDriver({ runtime, clock });
+      const session = await driver.createActorSession(ACTOR, {});
+      driver.startAsk(session, INSTANCE, { instructions: "A", typed: false });
+      runtime.emitStatus(retry);
+      const callbacks = state.timers.map((timer) => timer.callback);
+      if (end === "cancel") driver.cancelAsk(INSTANCE);
+      else if (end === "accept") driver.respondToSubmit(INSTANCE, { kind: "accept" });
+      else if (end === "dispose") driver.dispose();
+      else
+        driver.emit({
+          type: "node-settled",
+          instance: INSTANCE,
+          outcome: end === "settled-ok" ? "ok" : "failed",
+        });
+      runtime.emitStatus({ type: "model_request_completed" });
+      runtime.emitStatus(retry);
+      advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS);
+      for (const callback of callbacks) callback();
+      expect(calls.askStalled).toEqual([]);
+      driver.dispose();
+    },
+  );
+
+  it("下一 ask 不继承上一 ask 的重试；没有有效重试的长等待不通知", async () => {
+    const { clock, advanceTo, state } = fakeClock();
+    const runtime = stubRuntime(() => new Promise(() => {}));
+    const { driver, calls } = makeDriver({ runtime, clock });
+    const session = await driver.createActorSession(ACTOR, {});
+    driver.startAsk(session, INSTANCE, { instructions: "A", typed: false });
+    runtime.emitStatus(retry);
+    const callbacks = state.timers.map((timer) => timer.callback);
+    driver.cancelAsk(INSTANCE);
+    driver.startAsk(session, INSTANCE_2, { instructions: "B", typed: false });
+    runtime.emitStatus({ ...retry, reason: "auth_refresh" });
+    runtime.emitStatus({ ...retry, reason: "reasoning_signature_repair" });
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS);
+    for (const callback of callbacks) callback();
+    expect(calls.askStalled).toEqual([]);
+    runtime.emitStatus(retry);
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS);
+    expect(calls.askStalled.map((call) => call.instance)).toEqual([INSTANCE_2]);
+    driver.dispose();
+  });
+});
+
+it("typed accept 后旧 query 的迟到 retry/completed 不改变下一 ask 的时钟", async () => {
+  const { clock, advanceTo } = fakeClock();
+  const runtime = stubRuntime(() => new Promise(() => {}));
+  const { driver, calls } = makeDriver({ runtime, clock });
+  const session = await driver.createActorSession(ACTOR, {});
+  const retry = {
+    type: "model_retry_scheduled",
+    reason: "timeout",
+    delayMs: 500,
+    nextAttempt: 2,
+    message: "timeout",
+  };
+  driver.startAsk(session, INSTANCE, {
+    instructions: "A",
+    typed: true,
+    schema: { type: "string" },
+  });
+  runtime.emitStatus({
+    type: "model_request_started",
+    queryId: "old",
+    querySource: "tool",
+    toolCallId: "old-tool",
+  });
+  driver.respondToSubmit(INSTANCE, { kind: "accept" });
+  driver.startAsk(session, INSTANCE_2, { instructions: "B", typed: false });
+  runtime.emitStatus({ ...retry, queryId: "old", querySource: "tool", toolCallId: "old-tool" });
+  advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS);
+  expect(calls.askStalled).toEqual([]);
+  runtime.emitStatus({ type: "model_request_completed", queryId: "new", querySource: "turn" });
+  runtime.emitStatus({ ...retry, queryId: "new", querySource: "turn" });
+  advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS + 60_000);
+  runtime.emitStatus({
+    type: "model_request_completed",
+    queryId: "old",
+    querySource: "tool",
+    toolCallId: "old-tool",
+  });
+  advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS * 2);
+  expect(calls.askStalled.map((call) => call.instance)).toEqual([INSTANCE_2]);
+  driver.dispose();
+});
+
+it("真实 Core 11 次调用和 10 次恢复后 RecoveryExhausted，不重驱也不上膛 ask 钟", async () => {
+  const { clock, advanceTo, pending } = fakeClock();
+  const { sink, calls } = recordingSink();
+  const events: SessionEvent[] = [];
+  let modelCalls = 0;
+  const journal = new InMemoryJournalStore();
+  journal.createRun({
+    runId: RUN,
+    caps: { maxConcurrency: 16 },
+    spentTokens: 0,
+    status: "running",
+  });
+  const driver = createAgentRuntimeWorkflowDriver({
+    journal,
+    emit: () => {},
+    runId: RUN,
+    cwd: process.cwd(),
+    clock: { ...clock, random: () => 1 },
+    escalationRegistry: createWorkflowEscalationRegistry(),
+    executionPort: unsupportedExecutionPort(),
+    fileSystemPort: fakeFileSystemPort({}),
+    runtimeFactory: ({ sessionId }) => {
+      const runtime = createTestAgentRuntime(
+        sessionId,
+        {
+          mode: "yolo",
+          taskType: "workflow_child",
+          modelStreaming: "on",
+        },
+        {
+          eventStore: createInMemorySessionEventStore(),
+          modelFactory: createTestModelFactory({
+            async *streamText(_request, observation) {
+              modelCalls++;
+              const requestId = `broken-stream-${modelCalls}`;
+              const status = observation.invocationContext?.statusSink;
+              const base = {
+                requestId,
+                attempt: 1,
+                maxAttempts: 0,
+                providerId: String(observation.model.providerId),
+                modelId: String(observation.model.modelId),
+                timestamp: new Date().toISOString(),
+                traceId: "wf3",
+              };
+              await status?.publish({ ...base, type: "model_request_started" });
+              yield { type: "text_delta", text: "partial" };
+              await status?.publish({
+                ...base,
+                type: "model_request_failed",
+                reason: "network_error",
+                retryable: false,
+                message: "connection reset",
+              });
+              // 与真实adapter状态集合回归同一边界：可见输出后不在adapter内重放。
+              throw Object.assign(new Error("connection reset"), {
+                name: "AiSdkModelAdapterError",
+                code: "model_network_error",
+                context: { reason: "network_error", retryable: true },
+              });
+            },
+          }),
+        },
+      );
+      runtime.subscribeEvents({
+        onSessionEvent: (event) => {
+          events.push(event);
+        },
+      });
+      return runtime;
+    },
+  })(sink);
+  try {
+    const session = await driver.createActorSession(ACTOR, {});
+    driver.startAsk(session, INSTANCE, { instructions: "go", typed: false });
+    await vi.waitFor(() => expect(calls.failed).toHaveLength(1));
+    expect(modelCalls).toBe(11);
+    expect(
+      events.filter((event) => event.type === SessionEventType.StreamRecoveryRetryStarted),
+    ).toHaveLength(10);
+    expect(calls.failed[0]?.error.code).toBe("RecoveryExhausted");
+    expect(calls.waiting).toEqual([]);
+    expect(calls.stopped).toEqual([]);
+    expect(pending()).toHaveLength(0);
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS * 3);
+    await flush();
+    expect(modelCalls).toBe(11);
+    expect(calls.failed).toHaveLength(1);
+    expect(calls.askStalled).toEqual([]);
+    expect(calls.stalled).toEqual([]);
+  } finally {
+    driver.cancelAsk(INSTANCE);
+    driver.dispose();
+  }
+});
+
+describe("WF4 实例与 generation 隔离", () => {
+  const transientError = () =>
+    Object.assign(new Error("connection reset"), {
+      name: "AiSdkModelAdapterError",
+      code: "model_network_error",
+      context: { reason: "network_error", retryable: true },
+    });
+  function controlledRuntime() {
+    const turns: Array<{
+      resolve: (value: unknown) => void;
+      reject: (error: unknown) => void;
+      signal?: AbortSignal;
+    }> = [];
+    const runtime = stubRuntime(
+      () => new Promise((resolve, reject) => turns.push({ resolve, reject })),
+    );
+    const execute = runtime.executeTurn;
+    runtime.executeTurn = ((...args: unknown[]) => {
+      const result = execute();
+      turns.at(-1)!.signal = (args[2] as { abortSignal?: AbortSignal })?.abortSignal;
+      return result;
+    }) as never;
+    return { runtime, turns };
+  }
+  const result = { response: "done", events: [], usage: undefined };
+
+  it.each(["cancel", "accept", "dispose"])("%s 优先于当前 turn 的最终模型失败", async (end) => {
+    const { runtime, turns } = controlledRuntime();
+    const { driver, calls } = makeDriver({ runtime });
+    const session = await driver.createActorSession(ACTOR, {});
+    driver.startAsk(session, INSTANCE, { instructions: "go", typed: false });
+    if (end === "cancel") driver.cancelAsk(INSTANCE);
+    if (end === "accept") driver.respondToSubmit(INSTANCE, { kind: "accept" });
+    if (end === "dispose") driver.dispose();
+    turns[0]!.reject(transientError());
+    await flush();
+    expect(calls.failed).toEqual([]);
+    expect(calls.stopped).toEqual([]);
+    expect(calls.waiting).toEqual([]);
+    expect(turns).toHaveLength(1);
+    driver.dispose();
+  });
+
+  it("清理旧实例先于 askFailed 同步派发后继，后继 signal 和升级项保留", async () => {
+    const { runtime, turns } = controlledRuntime();
+    const { driver, calls, sink, factoryInputs, escalationRegistry } = makeDriver({ runtime });
+    const session = await driver.createActorSession(ACTOR, {});
+    driver.startAsk(session, INSTANCE, { instructions: "first", typed: false });
+    const oldQuestion = factoryInputs[0]!.escalatePort.escalate({ question: "old" });
+    const oldOutcome = oldQuestion.catch((error: unknown) => error);
+    const failed = sink.askFailed;
+    let nextOutcome: Promise<unknown> | undefined;
+    sink.askFailed = (instance, error) => {
+      expect(turns[0]!.signal?.aborted).toBe(true);
+      expect(escalationRegistry.pendingFor(RUN)).toEqual([]);
+      failed(instance, error);
+      driver.startAsk(session, INSTANCE_2, { instructions: "next", typed: false });
+      nextOutcome = factoryInputs[0]!.escalatePort
+        .escalate({ question: "next" })
+        .catch((e: unknown) => e);
+    };
+    turns[0]!.reject(transientError());
+    await flush();
+    expect(calls.failed).toHaveLength(1);
+    expect(calls.failed[0]?.error.code).toBe("RecoveryExhausted");
+    expect(await oldOutcome).toMatchObject({ code: "Cancelled" });
+    expect(turns[1]!.signal?.aborted).toBe(false);
+    expect(escalationRegistry.pendingFor(RUN).map((q) => q.question)).toEqual(["next"]);
+    driver.cancelAsk(INSTANCE_2);
+    await nextOutcome;
+    turns[1]!.resolve(result);
+    await flush();
+    driver.dispose();
+  });
+
+  it.each(["reject", "resolve"])(
+    "旧实例迟到 %s 和旧 cancel/accept 不触碰后继升级项或终态",
+    async (outcome) => {
+      // 防御边界：直接驱动端口模拟旧回调迟到，不声称真实 runtime 会并行执行同 actor turn。
+      const { runtime, turns } = controlledRuntime();
+      const { driver, calls, sink, factoryInputs, escalationRegistry } = makeDriver({ runtime });
+      const ended = vi.fn();
+      sink.askTurnEnded = ended;
+      const session = await driver.createActorSession(ACTOR, {});
+      driver.startAsk(session, INSTANCE, { instructions: "old", typed: false });
+      driver.startAsk(session, INSTANCE_2, { instructions: "next", typed: false });
+      const question = factoryInputs[0]!.escalatePort
+        .escalate({ question: "next" })
+        .catch((e: unknown) => e);
+      driver.cancelAsk(INSTANCE);
+      driver.respondToSubmit(INSTANCE, { kind: "accept" });
+      if (outcome === "reject") turns[0]!.reject(transientError());
+      else turns[0]!.resolve(result);
+      await flush();
+      expect(calls.failed).toEqual([]);
+      expect(calls.stopped).toEqual([]);
+      expect(ended).not.toHaveBeenCalled();
+      expect(turns[1]!.signal?.aborted).toBe(false);
+      expect(escalationRegistry.pendingFor(RUN).map((q) => q.question)).toEqual(["next"]);
+      driver.cancelAsk(INSTANCE_2);
+      await question;
+      turns[1]!.resolve(result);
+      await flush();
+      driver.dispose();
+    },
+  );
+
+  it("旧 generation 的迟到 reject 不撤 nudge 新轮的升级项", async () => {
+    const { runtime, turns } = controlledRuntime();
+    const { driver, calls, factoryInputs, escalationRegistry } = makeDriver({ runtime });
+    const session = await driver.createActorSession(ACTOR, {});
+    driver.startAsk(session, INSTANCE, { instructions: "go", typed: false });
+    driver.respondToSubmit(INSTANCE, { kind: "nudge" });
+    const question = factoryInputs[0]!.escalatePort
+      .escalate({ question: "new generation" })
+      .catch((e: unknown) => e);
+    turns[0]!.reject(transientError());
+    await flush();
+    expect(calls.failed).toEqual([]);
+    expect(escalationRegistry.pendingFor(RUN)).toHaveLength(1);
+    expect(turns[1]!.signal?.aborted).toBe(false);
+    driver.cancelAsk(INSTANCE);
+    await question;
+    turns[1]!.resolve(result);
+    await flush();
+    driver.dispose();
+  });
+
+  it("转录计数 await 后复核 generation，旧轮不能结算 nudge 的新轮", async () => {
+    const { runtime, turns } = controlledRuntime();
+    let counted!: (rows: unknown[]) => void;
+    const store = {
+      messages: () =>
+        new Promise((resolve) => {
+          counted = resolve;
+        }),
+    } as unknown as ActorTranscriptStore;
+    const { driver, sink } = makeDriver({ runtime, actorTranscriptStore: store });
+    const ended = vi.fn();
+    sink.askTurnEnded = ended;
+    const session = await driver.createActorSession(ACTOR, {});
+    driver.startAsk(session, INSTANCE, { instructions: "go", typed: false });
+    turns[0]!.resolve(result);
+    await flush();
+    driver.respondToSubmit(INSTANCE, { kind: "nudge" });
+    counted([]);
+    await flush();
+    expect(ended).not.toHaveBeenCalled();
+    driver.cancelAsk(INSTANCE);
+    driver.dispose();
+  });
+
+  it("accepted resolve 在 dispose 后仍保留合法用量及转录边界", async () => {
+    const { runtime, turns } = controlledRuntime();
+    const store = { messages: async () => [1, 2, 3] } as unknown as ActorTranscriptStore;
+    const { driver, sink, journal } = makeDriver({ runtime, actorTranscriptStore: store });
+    const stats = vi.fn();
+    const ended = vi.fn();
+    sink.askStats = stats;
+    sink.askTurnEnded = ended;
+    const session = await driver.createActorSession(ACTOR, {});
+    journal.putNode({
+      runId: RUN,
+      siteId: INSTANCE.siteId,
+      ordinal: INSTANCE.ordinal,
+      kind: "ask",
+      status: "completed",
+    } as never);
+    driver.startAsk(session, INSTANCE, { instructions: "go", typed: false });
+    driver.respondToSubmit(INSTANCE, { kind: "accept" });
+    driver.dispose();
+    turns[0]!.resolve({ ...result, usage: { totalTokens: 20, inputTokens: 12, outputTokens: 8 } });
+    await flush(16);
+    expect(stats).toHaveBeenCalledWith(INSTANCE, expect.objectContaining({ tokens: 20 }));
+    expect(ended).not.toHaveBeenCalled();
+    expect(journal.getNode(RUN, INSTANCE.siteId, INSTANCE.ordinal)?.messageBoundary).toBe(3);
+  });
+
+  it("没有模型错误的长等待不失败也不创建新 turn", async () => {
+    const { runtime, turns } = controlledRuntime();
+    const { clock, advanceTo } = fakeClock();
+    const { driver, calls } = makeDriver({ runtime, clock });
+    const session = await driver.createActorSession(ACTOR, {});
+    driver.startAsk(session, INSTANCE, { instructions: "wait", typed: false });
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS * 100);
+    await flush();
+    expect(calls.failed).toEqual([]);
+    expect(calls.askStalled).toEqual([]);
+    expect(turns).toHaveLength(1);
+    driver.cancelAsk(INSTANCE);
+    turns[0]!.resolve(result);
+    await flush();
+    driver.dispose();
+  });
+});
+
+it("已成功执行的有副作用工具在模型恢复耗尽后不被 Driver 重放", async () => {
+  const { clock, advanceTo } = fakeClock();
+  const { sink, calls } = recordingSink();
+  const registry = createToolRegistry();
+  let effects = 0;
+  let modelCalls = 0;
+  // 用真实工具执行器完成一次受控副作用；只证明不重调度，不声称外部操作可回滚或已停止。
+  registry.register({
+    capability: "Controlled workflow effect",
+    inputSchema: {},
+    outputSchema: { type: "string" },
+    timeout: { kind: "none" },
+    cancellation: { supported: true, cleanup: "none", userVisibleMessage: "cancelled" },
+    permission: {
+      permission: "edit",
+      reason: "Fixture",
+      riskLevel: "low",
+      sideEffectScope: "workspace",
+      needsApproval: false,
+      patternSources: ["none"],
+      denyPriority: "beforeAsk",
+    },
+    resultBudget: { maxInlineBytes: 1024, maxModelBytes: 1024, strategy: "inline" },
+    trace: {
+      required: true,
+      propagateToAdapters: true,
+      recordInput: "summary",
+      recordOutput: "summary",
+    },
+    metadata: {
+      name: "CommittedEffect",
+      concurrentSafe: false,
+      destructive: false,
+      needsApproval: false,
+      readOnly: false,
+      riskLevel: "low",
+      sideEffectScope: "workspace",
+    },
+    handler: async () => {
+      effects++;
+      return "effect committed";
+    },
+  });
+  const driver = createAgentRuntimeWorkflowDriver({
+    journal: new InMemoryJournalStore(),
+    emit: () => {},
+    cwd: process.cwd(),
+    runId: RUN,
+    clock,
+    escalationRegistry: createWorkflowEscalationRegistry(),
+    executionPort: unsupportedExecutionPort(),
+    fileSystemPort: fakeFileSystemPort({}),
+    runtimeFactory: ({ sessionId }) =>
+      createTestAgentRuntime(
+        sessionId,
+        {
+          mode: "yolo",
+          taskType: "workflow_child",
+          modelStreaming: "on",
+          toolSearch: { mode: "off" },
+        },
+        {
+          eventStore: createInMemorySessionEventStore(),
+          toolRegistry: registry,
+          modelFactory: createTestModelFactory({
+            async *streamText() {
+              modelCalls++;
+              if (modelCalls === 1) {
+                yield {
+                  type: "tool_call",
+                  toolCall: { id: "committed-effect", name: "CommittedEffect", input: {} },
+                };
+                yield { type: "finish", finishReason: "tool-calls", usage: {} };
+                return;
+              }
+              expect(effects).toBe(1);
+              yield { type: "text_delta", text: "partial" };
+              throw Object.assign(new Error("connection reset"), {
+                name: "AiSdkModelAdapterError",
+                code: "model_network_error",
+                context: { reason: "network_error", retryable: true },
+              });
+            },
+          }),
+        },
+      ),
+  })(sink);
+  try {
+    const session = await driver.createActorSession(ACTOR, {});
+    driver.startAsk(session, INSTANCE, {
+      instructions: "perform effect then report",
+      typed: false,
+    });
+    await vi.waitFor(() => expect(calls.failed).toHaveLength(1));
+    expect(calls.failed[0]?.error.code).toBe("RecoveryExhausted");
+    expect(effects).toBe(1);
+    expect(modelCalls).toBe(12);
+    advanceTo(WORKFLOW_STALL_NOTIFY_AFTER_MS * 100);
+    await flush();
+    expect(modelCalls).toBe(12);
+    expect(effects).toBe(1);
+  } finally {
+    driver.cancelAsk(INSTANCE);
+    driver.dispose();
+  }
 });

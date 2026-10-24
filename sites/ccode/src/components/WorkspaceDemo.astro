@@ -1,0 +1,49 @@
+---
+import Icon from './Icon.astro';
+---
+<div class="workspace" aria-label="Ccode 工作台交互示意">
+  <div class="workspace-topbar">
+    <div class="traffic-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+    <span class="workspace-title"><img src="/brand.svg" width="28" height="18" alt="" /> Ccode <span>/ 我的工作空间</span></span>
+    <span class="demo-label">界面示意 · 非运行结果</span>
+  </div>
+  <div class="workspace-body">
+    <aside class="workspace-sidebar" aria-hidden="true">
+      <div class="demo-new"><Icon name="plus" size={16} /> 新建任务</div>
+      <p class="sidebar-label">工作空间</p>
+      <div class="sidebar-item active"><Icon name="folder" size={16} /> 我的第一个项目</div>
+      <div class="sidebar-item"><Icon name="grid" size={16} /> 全部任务</div>
+      <p class="sidebar-label recent-label">最近的任务</p>
+      <div class="sidebar-task"><span class="status-dot"></span> 搭建产品官网</div>
+      <div class="sidebar-task"><span class="status-dot muted"></span> 整理项目结构</div>
+      <div class="sidebar-task"><span class="status-dot muted"></span> 检查代码问题</div>
+      <div class="sidebar-bottom"><span class="avatar">C</span><span>我的工作台<small>专注于你的下一个想法</small></span></div>
+    </aside>
+    <div class="demo-conversation">
+      <div class="conversation-breadcrumb"><span data-demo-title>搭建产品官网</span><span>示例任务</span></div>
+      <div class="demo-user"><p data-demo-prompt>帮我做一个产品官网，能展示功能，也能下载安装包。</p><span class="user-avatar">我</span></div>
+      <div class="assistant-message">
+        <div class="assistant-mark"><Icon name="spark" size={18} /></div>
+        <div class="assistant-content"><strong>Ccode</strong><p data-demo-reply>先把想法拆成清晰的步骤，再一起完成。</p>
+          <div class="task-plan"><div class="plan-heading"><Icon name="grid" size={15} /><span>任务计划</span><span class="plan-count">3 个步骤</span></div>
+            <div class="plan-row"><span class="step-circle">1</span><span data-demo-step="0">明确产品定位与页面结构</span></div>
+            <div class="plan-row"><span class="step-circle">2</span><span data-demo-step="1">完成桌面与手机端页面</span></div>
+            <div class="plan-row"><span class="step-circle">3</span><span data-demo-step="2">检查下载与交互，交付结果</span></div>
+          </div>
+          <div class="demo-file"><span class="file-icon"><Icon name="code" size={19} /></span><span><span data-demo-file-title>产品官网</span><small>页面 · 文件 · 实施过程，在同一处</small></span><Icon name="arrow" size={17} /></div>
+        </div>
+      </div>
+      <div class="demo-composer" aria-hidden="true"><span>继续描述你的想法…</span><div><span><Icon name="plus" size={16} /> 模型可自行配置</span><span class="send-icon">↑</span></div></div>
+    </div>
+    <div class="demo-preview" aria-hidden="true">
+      <div class="preview-toolbar"><span>网站作品示例</span><span>↗</span></div>
+      <div class="mini-page"><div class="mini-nav"><b>studio.</b><span>ABOUT &nbsp; WORK</span></div><div class="mini-orbit"><div class="orbit-ring"></div><div class="orbit-ring second"></div><div class="orbit-core"></div><span class="orbit-point"></span></div><span class="mini-eyebrow">MADE OF POSSIBILITIES</span><h3>Ideas into<br /><em>something real.</em></h3><p>从一个想法开始，让创造发生。</p><div class="mini-button">探索更多 <span>↗</span></div><div class="mini-bottom"><span>DESIGN / BUILD / CREATE</span><span>01 — 03</span></div></div>
+      <div class="preview-caption"><span class="status-dot"></span> 示意画面，仅展示工作流程</div>
+    </div>
+  </div>
+</div>
+<div class="demo-switcher" role="group" aria-label="切换演示场景">
+  <button type="button" data-demo="website" aria-pressed="true"><Icon name="code" size={17} />搭建网站</button>
+  <button type="button" data-demo="project" aria-pressed="false"><Icon name="folder" size={17} />整理项目</button>
+  <button type="button" data-demo="review" aria-pressed="false"><Icon name="terminal" size={17} />检查代码</button>
+</div>

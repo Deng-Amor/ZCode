@@ -1133,7 +1133,10 @@ export function resolveBundledCuaHelperAppPath(
 export { isOfficialCuaPluginEnabledForWorkspace };
 
 export function hasGlobalCliZCodeCuaServer(env: NodeJS.ProcessEnv = process.env): boolean {
-  const home = env.HOME?.trim() || homedir();
+  // CCode 的能力开关也来自自己的配置，避免只读探测误用原安装版账号配置。
+  const home = env.ZCODE_DESKTOP_HOME_DIR?.trim()
+    ? env.ZCODE_DATA_BASE_DIR?.trim() || env.ZCODE_DESKTOP_HOME_DIR.trim()
+    : env.HOME?.trim() || homedir();
   const configPath = join(home, ".zcode", "cli", "config.json");
   let parsed: unknown;
   try {
@@ -1179,6 +1182,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createLocalServices(options: {
   /** 仅限本地 chat Agent 的专用 IPC，不注册为公共 service。 */
   createControllerPrivateChannel?: ControllerPrivateChannelFactory;
+  /** Host 注入的锁定内容窄端口；不在 services 层构造 adapters client。 */
+  confidentialControllerLockedContent?: { load(): Promise<{ version: number; digest: string; skillMd: string; files: readonly { path: string; bytes: Uint8Array }[] }> };
   /** 已鉴权 Desktop stdio 连接提供的私有回查频道；不作为公共 service 暴露。 */
   topicResourceRelayChannel?: (request: unknown) => IChannel;
   parentPort?: Parameters<typeof createBroadcastService>[0];
@@ -2219,6 +2224,7 @@ export function createLocalServices(options: {
   });
   const zcodeAgentService = createZCodeAgentService({
     createControllerPrivateChannel: options?.createControllerPrivateChannel,
+    confidentialControllerLockedContent: options?.confidentialControllerLockedContent,
     prepareProjectExecution,
     prepareSessionCreation: async (target) =>
       (await taskIndexRepo.getProjectRepository()).reserveCreatedTask({

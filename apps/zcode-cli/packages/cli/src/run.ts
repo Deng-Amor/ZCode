@@ -282,7 +282,6 @@ const runZCodeProtocolCommand = async (
     const runProtocolAgent =
       deps.runZCodeProtocolAgent ?? (await loadBootstrapModule()).runZCodeProtocolAgent;
     await runProtocolAgent({
-      globalSystemPrompt: deps.globalSystemPrompt,
       createConfidentialControllerScope: deps.createConfidentialControllerScope,
       lifecycle: deps.protocolLifecycle,
       cwd: workingDirectory,

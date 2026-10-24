@@ -2,10 +2,10 @@
 !include FileFunc.nsh
 
 !ifndef ZCODE_INSTALLER_DEFAULT_LOG_PATH
-  !define ZCODE_INSTALLER_DEFAULT_LOG_PATH "$TEMP\ZCode-installer.log"
+  !define ZCODE_INSTALLER_DEFAULT_LOG_PATH "$TEMP\CCode-installer.log"
 !endif
 !ifndef ZCODE_INSTALLER_ELEVATED_LOG_PATH
-  !define ZCODE_INSTALLER_ELEVATED_LOG_PATH "$WINDIR\Logs\ZCode-installer.log"
+  !define ZCODE_INSTALLER_ELEVATED_LOG_PATH "$WINDIR\Logs\CCode-installer.log"
 !endif
 !ifndef ZCODE_INSTALLER_IS_ELEVATED_INNER
   ; 修复原因：来源只在测试夹具模拟内层，正式默认恒假会让提权进程继续使用调用方 /LOG。
@@ -15,11 +15,11 @@
 !endif
 
 !ifndef ZCODE_INSTALL_MANIFEST_NAME
-  !define ZCODE_INSTALL_MANIFEST_NAME ".zcode-install-manifest"
+  !define ZCODE_INSTALL_MANIFEST_NAME ".ccode-install-manifest"
 !endif
 
 !ifndef ZCODE_UNINSTALLER_LOG_PATH
-  !define ZCODE_UNINSTALLER_LOG_PATH "$TEMP\ZCode-uninstaller.log"
+  !define ZCODE_UNINSTALLER_LOG_PATH "$TEMP\CCode-uninstaller.log"
 !endif
 !ifndef ZCODE_UNINSTALLER_FUNCTION_PREFIX
   !define ZCODE_UNINSTALLER_FUNCTION_PREFIX "un."
@@ -30,7 +30,7 @@
 
   ; 卸载器只在更新时删除旧文件；单独记录清理阶段，避免外层把权限/空间错误误报成应用仍在运行。
   !macro ZCodeReportUninstallerStage MESSAGE
-    DetailPrint "ZCode: ${MESSAGE}"
+    DetailPrint "CCode: ${MESSAGE}"
     Push "${MESSAGE}"
     Call ${ZCODE_UNINSTALLER_FUNCTION_PREFIX}ZCodeWriteUninstallerLog
   !macroend
@@ -148,7 +148,7 @@
   ; 详情面板和文件日志共用同一条阶段事件，避免静默安装丢失关键上下文。
   !macro ZCodeReportInstallerStage MESSAGE
     SetDetailsPrint listonly
-    DetailPrint "ZCode: ${MESSAGE}"
+    DetailPrint "CCode: ${MESSAGE}"
     Push "${MESSAGE}"
     Call ZCodeWriteInstallerLog
   !macroend
@@ -188,6 +188,36 @@
       Pop $R9
   FunctionEnd
 
+  ; 手动运行新安装包时优先复用已有安装记录，避免每次都被当作全新安装。
+  ; electron-builder 会把实际安装目录写入卸载注册表；ownership manifest 用来确认该目录确实属于本产品。
+  Function ZCodeRestorePreviousInstallDir
+    Push $R0
+
+    ; 自动更新已经传入正确目录时不覆盖，避免干扰更新交接。
+    IfFileExists "$INSTDIR\${ZCODE_INSTALL_MANIFEST_NAME}" zcodeRestoreInstallDirDone
+    IfFileExists "$INSTDIR\${APP_FILENAME}" zcodeRestoreInstallDirDone
+
+    ReadRegStr $R0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "InstallLocation"
+    StrCmp $R0 "" zcodeRestoreInstallDirReadMachine
+    Goto zcodeRestoreInstallDirValidate
+
+    zcodeRestoreInstallDirReadMachine:
+      ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}" "InstallLocation"
+
+    zcodeRestoreInstallDirValidate:
+      StrCmp $R0 "" zcodeRestoreInstallDirDone
+      IfFileExists "$R0\${ZCODE_INSTALL_MANIFEST_NAME}" 0 zcodeRestoreInstallDirCheckNested
+      StrCpy $INSTDIR $R0
+      Goto zcodeRestoreInstallDirDone
+
+    zcodeRestoreInstallDirCheckNested:
+      IfFileExists "$R0\${APP_FILENAME}\${ZCODE_INSTALL_MANIFEST_NAME}" 0 zcodeRestoreInstallDirDone
+      StrCpy $INSTDIR "$R0\${APP_FILENAME}"
+
+    zcodeRestoreInstallDirDone:
+      Pop $R0
+  FunctionEnd
+
   Function ZCodeResetUninstallerLog
     StrCpy $ZCodeUninstallerDetailsUnavailable ""
     ClearErrors
@@ -218,7 +248,7 @@
       IfErrors zcodeShowUninstallerDetailsClose
       StrCmp $R1 "" zcodeShowUninstallerDetailsRead
       SetDetailsPrint listonly
-      DetailPrint "ZCode: cleanup-log $R1"
+      DetailPrint "CCode: cleanup-log $R1"
       Goto zcodeShowUninstallerDetailsRead
     zcodeShowUninstallerDetailsClose:
       FileClose $R0
@@ -233,6 +263,7 @@
   !macroend
 
   !macro customInit
+    Call ZCodeRestorePreviousInstallDir
     IfSilent zcodeInstallerInitSilent zcodeInstallerInitInteractive
     zcodeInstallerInitSilent:
       !insertmacro ZCodeReportInstallerStage "installer-initialized mode=silent"
@@ -296,7 +327,7 @@
       ; 修复原因：静默自动更新无人值守，未设置 /SD 的模态框会一直等待用户点击，
       ; 使明确的退出码无法返回 electron-updater。静默时自动采用 IDOK，交互时仍显示提示。
       SetDetailsPrint listonly
-      DetailPrint "ZCode: cleanup-failed exit-code=$R0"
+      DetailPrint "CCode: cleanup-failed exit-code=$R0"
       Call ZCodeShowUninstallerCleanupDetails
       MessageBox MB_OK|MB_ICONSTOP "旧版本清理失败（错误码 $R0）。可能是文件被占用、权限不足或磁盘空间不足。详细日志：${ZCODE_UNINSTALLER_LOG_PATH}" /SD IDOK
       SetErrorLevel 2
@@ -526,7 +557,7 @@
     zcodeInstallDirDataBlockFound:
       IfSilent zcodeInstallDirDataBlockSilent
 
-      !insertmacro MUI_HEADER_TEXT "需要修改安装目录" "当前安装目录或其子目录包含 ZCode 数据目录"
+      !insertmacro MUI_HEADER_TEXT "需要修改安装目录" "当前安装目录或其子目录包含 CCode 数据目录"
       nsDialogs::Create 1018
       Pop $0
       StrCmp $0 error zcodeInstallDirDataBlockDialogFailed 0

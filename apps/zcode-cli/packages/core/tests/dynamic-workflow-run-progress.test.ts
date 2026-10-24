@@ -105,8 +105,9 @@ interface CapturedNotification {
 /** 通知在 runtime 上产出（enqueueBackgroundTaskNotification 是原型方法），实例桩即可截获。 */
 function captureNotifications(runtime: AgentRuntime): CapturedNotification[] {
   const captured: CapturedNotification[] = [];
-  (runtime as unknown as { enqueueBackgroundTaskNotification: (n: CapturedNotification) => void })
-    .enqueueBackgroundTaskNotification = (notification) => {
+  (
+    runtime as unknown as { enqueueBackgroundTaskNotification: (n: CapturedNotification) => void }
+  ).enqueueBackgroundTaskNotification = (notification) => {
     captured.push(notification);
   };
   return captured;
@@ -551,5 +552,52 @@ describe("hole-reached → 嵌套 id 逐字透传", () => {
     const text = captured[0]?.text ?? "";
     expect(text).toContain("<hole-id>hole#1/hole#1</hole-id>");
     expect(text).toContain('hole_id="hole#1/hole#1"');
+  });
+});
+
+describe("node-stalled → 普通后台通知", () => {
+  it("真实进度入口到真实命令队列保留完整 ask 身份，不伪装 run stall", async () => {
+    const { runtime } = makeRuntime("ask-stall-queue");
+    const internal =
+      runtime as unknown as import("../src/runtime/internal.js").AgentRuntimeInternal;
+    internal.runtimeCommandDrainActive = true;
+    const siteId = "ask#" + "x".repeat(500);
+    await runtime.recordDynamicWorkflowRunProgress({
+      ...progress,
+      eventType: "node-stalled",
+      payload: { instance: { siteId, ordinal: 2 }, sinceMs: 1_200_000, reason: "timeout" },
+    });
+    const queued = internal.runtimeCommandQueue.snapshot();
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({
+      mode: "task-notification",
+      taskId: progress.runId,
+      branchGeneration: internal.branchGeneration,
+      originMeta: { backgroundSource: "workflow", title: progress.runId, workId: progress.runId },
+    });
+    const notification =
+      queued[0] as import("../src/runtime/command-queue.js").TaskNotificationRuntimeCommand;
+    expect(notification.originMeta).not.toHaveProperty("workflowNotification");
+    expect(notification.text).toContain(`${siteId}@2`);
+    expect(notification.text).toContain(progress.runId);
+    expect(notification.text).toContain("20 minutes");
+    expect(notification.text).toContain("The run is still running");
+  });
+
+  it.each([
+    { instance: null, sinceMs: 1 },
+    { instance: { siteId: "", ordinal: 1 }, sinceMs: 1 },
+    { instance: { siteId: " ", ordinal: 1 }, sinceMs: 1 },
+    { instance: { siteId: "ask", ordinal: 0 }, sinceMs: 1 },
+    { instance: { siteId: "ask", ordinal: 1.5 }, sinceMs: 1 },
+    { instance: { siteId: "ask", ordinal: 1 }, sinceMs: -1 },
+    { instance: { siteId: "ask", ordinal: 1 }, sinceMs: Infinity },
+  ])("畸形载荷跳过且不抛错 %j", async (payload) => {
+    const { runtime } = makeRuntime("ask-stall-invalid");
+    const captured = captureNotifications(runtime);
+    await expect(
+      runtime.recordDynamicWorkflowRunProgress({ ...progress, eventType: "node-stalled", payload }),
+    ).resolves.toBeUndefined();
+    expect(captured).toEqual([]);
   });
 });

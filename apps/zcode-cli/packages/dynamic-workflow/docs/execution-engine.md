@@ -10,10 +10,10 @@ The engine takes a script that has passed the analyzer, runs it inside a sandbox
 | --- | --- |
 | The facade the author writes against: `agent`, `ask`, `files.*`, `git.*`, `world.run`, `report`, `artifact.*`, `phase`, `log`, prompts, the snippet service, "Usage, not budget" | `docs/dynamic-workflow/authoring.md` |
 | Compile-time analysis: sites, the actor graph, control flow, diagnostics | `docs/analysis.md` |
-| Admission of model requests, the governor, the retry budget, the model-error policy table, the stall clock, the driver's transient redrive | `docs/dynamic-workflow/concurrency.md` |
+| Admission of model requests, the governor, the retry budget, the model-error policy table, the stall clock, final model-recovery exhaustion | `docs/dynamic-workflow/concurrency.md` |
 | Every sentence the main agent or the user reads: `<task-notification>`, the provider-stop `<error>` block, stall and escalation texts, delivery guidance, how the GUI renders a run | `docs/dynamic-workflow/transcript-and-notifications.md` |
 
-The split with `concurrency.md` is exact: that document owns how a request is retried and how the governor decides a failure is not recoverable; this document owns what the run does once the driver has decided so (stop with `provider`, fail the node with `ContextLimit`, or redrive the turn).
+The split with `concurrency.md` is exact: that document owns how a request is retried and how the governor decides a failure is not recoverable; this document owns what the run does once the driver has decided so (stop with `provider`, or fail the node with `ContextLimit` or `RecoveryExhausted`).
 
 ## Terms
 
@@ -485,7 +485,7 @@ Production uses the SQLite repository. Tests and the engine's own suites use an 
 
 A resumed run is the same script run again with the journal answering for what already happened. The engine is constructed with the existing run record. It first checks that the incoming `scriptHash` equals the recorded one and throws `ScriptHashMismatch` synchronously otherwise, with `mismatch: {expected, got}` and a message that explains resume needs the byte-identical script and that a revised script is a new run amended from this one. It then restores the report counter by counting `report` rows, the artifact state from `artifact` rows, the number of journaled asks per subagent from the ask rows, and `spentTokens` from the run row, flips the status to `running`, and emits `run-started`, followed by `usage-updated` with the restored total when it is non-zero ("Usage accounting").
 
-As the script re-executes, each instance meets its journal row. A `completed` or `failed` row is settled from the journal with `node-settled {cached: true}` and no driver call; the script sees the same value or the same rejection as before. A `running` row is re-executed live; because the subagent's transcript already holds the turns of the first attempt, that ask's stats are journaled without `worldToolCalls` ("How the engine consumes the cache"). Subagent sessions are re-attached by the journaled session id, so a subagent whose first ask is cached and whose second is live continues the same transcript. The hold rule keeps cached asks ahead of live ones on each subagent.
+As the script re-executes, each instance meets its journal row. A `completed` or `failed` row is settled from the journal with `node-settled {cached: true}` and no driver call; the script sees the same value or the same rejection as before. A `running` pure world-read or ask may re-execute live. A `running` **world-run** has an unknown external outcome: after checking its input hash, the engine terminates the run as `errored/RecoveryUncertain` before writing a node or calling the driver. The original running row and completed siblings remain intact; catching the rejection cannot dispatch another effect. For a resumed ask, because the subagent's transcript already holds the turns of the first attempt, its stats are journaled without `worldToolCalls` ("How the engine consumes the cache"). Subagent sessions are re-attached by the journaled session id, so a subagent whose first ask is cached and whose second is live continues the same transcript. The hold rule keeps cached asks ahead of live ones on each subagent.
 
 ### Replaying the settle order
 
@@ -503,6 +503,7 @@ Resume is gated at the run service before an engine exists.
 | --- | --- |
 | `not_found` | no run row |
 | `already_running` | the same run id is in flight in this process |
+| `recovery_uncertain` | an owned predecessor contains a running world-run; resume and amendment are refused, returning only trusted run/instance identification and a verification message, with no replacement run or replay approval path |
 | `not_resumable` | the run is `completed` or `errored`; only `stopped` resumes (`isResumableSettlement`) |
 | `script_missing` | the row predates `script_text` |
 | `script_mismatch` | the row's `script_hash` no longer matches its own `script_text` |
@@ -517,8 +518,8 @@ Caps and arguments come from the record, which is why a run retuned before it st
 | Status | Meaning | Resumable | `failure` |
 | --- | --- | --- | --- |
 | `completed` | the script returned; the return value is the settlement artifact | no | none |
-| `errored` | the script threw, or the engine hit a run-level failure | no; amend with `AmendWorkflow` | always |
-| `stopped {reason}` | something outside the script ended it | yes, `ResumeWorkflowRun`, except `superseded` | `provider` and `interrupted` carry one; `user`, `model` and `superseded` do not |
+| `errored` | the script threw, or the engine hit a run-level failure | no; script errors may be amended, but `RecoveryUncertain` also refuses amendment | always |
+| `stopped {reason}` | something outside the script ended it | `ResumeWorkflowRun`, except `superseded` or a recorded running world-run with unknown outcome | `provider` and `interrupted` carry one; `user`, `model` and `superseded` do not |
 
 ```ts
 type RunStatus = "pending" | "running" | "completed" | "errored" | "stopped";
@@ -547,7 +548,7 @@ The driver classifies every rejected model turn with `resolveWorkflowModelFailur
 | --- | --- |
 | stop, kind `auth`, `not_configured`, `model_unavailable`, `invalid_request`, `quota`, or `other` | `sink.stopRun(ProviderStop)`; the whole run becomes `stopped(provider)`. The error message is `Subagent <name> hit a permanent model-side error (<reason> [<code>]): <raw>` and carries `ProviderStopDetails`. |
 | `context_exceeded` | the ask fails with `ContextLimit`: "Subagent <name> exceeded the model's context window even after compaction. Give this ask a smaller input or split the work across subagents." The script may catch it; the run continues. |
-| anything else | the driver redrives the turn after a backoff (2 s doubling to 60 s, jittered by half, or the provider's `Retry-After`), reporting `askWaiting {cause: "backoff"}` meanwhile; the script never sees the failure |
+| anything else | after the underlying recovery ends, the driver fails the ask with `RecoveryExhausted` and creates no further turn; the script may catch the rejection or use `Promise.allSettled` to await independent siblings |
 
 ```ts
 export interface ProviderStopDetails {
@@ -564,6 +565,17 @@ The engine enriches the details with the stopping subagent's birth phase before 
 
 A run whose subagents are all retrying makes no progress and emits no failure. The driver keeps one run-level stall clock: any successful model request resets it, any scheduled retry arms it, and when `WORKFLOW_STALL_NOTIFY_AFTER_MS` (twenty minutes) pass without a success while a retry has been scheduled, it fires once and the engine records `run-stalled {sinceMs, reason?, cap?}`. The run keeps going; the notice exists so the user can decide to cancel. The clock is described from the governor's side in `concurrency.md`.
 
+The additional per-ask observation contract is specified in
+`docs/specs/workflow-ask-stall-observation.md` (implementation pending its acceptance
+checks). It preserves that run-level clock and adds
+`askStalled(instance, {sinceMs, reason?})` / `node-stalled` for a live ask retrying for
+twenty minutes without its own successful model request. Other asks' success cannot
+clear this segment. The engine checks both run settlement and `scheduler.isLive(instance)`
+before journaling; the event does not advance the node, update run progress or mark the
+whole run stalled. Existing progress delivery must produce a parent-session notification
+that identifies the run and ask. Completion, cancellation and driver disposal release
+the instance clock. This adds no automatic restart or generic tool timeout.
+
 ### From `errored` to an amended run
 
 `errored` is not resumable because the script that produced it will, by determinism, produce it again. The way forward is a revised script submitted with `AmendWorkflow`, which imports the completed work of the failed run as a cache (see "Amend-resume"). The tool descriptions steer the model that way; the run snapshot carries `runStatus` and `stopReason` so tool text and notifications can tell the truth even though the background-task tracker's own `status` vocabulary folds `stopped` into `cancelled` and `errored` into `failed`.
@@ -572,7 +584,7 @@ A run whose subagents are all retrying makes no progress and emits no failure. T
 
 ### Cancel
 
-A cancel travels one path regardless of who asked: the run service's `cancel(runId, initiator)` aborts the run's `AbortController` with the initiator as the reason; the harness reads the reason off the signal and calls `engine.stop("user")`, `engine.stop("model")`, or `engine.stop("superseded", undefined, supersededBy)` when the reason is the `{ superseded: <runId> }` object the amend path passes. The stop tool writes the initiator before calling the port. A user-initiated stop is also what makes the next amendment of that run ask for confirmation again (`docs/dynamic-workflow/launch.md`, "Amending this session's runs"). The engine aborts every in-flight ask through `cancelAsk` (the driver aborts the turn, rejects any parked submit or escalation promise with `Cancelled`, and withdraws a pending redrive), emits `node-settled cancelled` for each, and settles `stopped {reason}` without a failure.
+A cancel travels one path regardless of who asked: the run service's `cancel(runId, initiator)` aborts the run's `AbortController` with the initiator as the reason; the harness reads the reason off the signal and calls `engine.stop("user")`, `engine.stop("model")`, or `engine.stop("superseded", undefined, supersededBy)` when the reason is the `{ superseded: <runId> }` object the amend path passes. The stop tool writes the initiator before calling the port. A user-initiated stop is also what makes the next amendment of that run ask for confirmation again (`docs/dynamic-workflow/launch.md`, "Amending this session's runs"). The engine aborts every in-flight ask through `cancelAsk` (the driver aborts the turn, rejects any parked submit or escalation promise with `Cancelled`, and clears that ask's observation clock), emits `node-settled cancelled` for each, and settles `stopped {reason}` without a failure.
 
 ### Resume
 
@@ -761,7 +773,7 @@ The run service's `fill` sits beside `amend`. It reads the run's recorded script
 
 ## Settlement cleanup
 
-Two obligations follow `run-settled`. First, no ask may outlive its run: `complete`, `stop`, and `fail` all abort in-flight asks before writing the terminal status, so a subagent's turn cannot report into a settled engine and cannot keep spending tokens. Second, the subagent runtimes are released: `driver.dispose()` is called exactly once by the engine after `run-settled`, and it disposes the stall clock, unsubscribes from the governor, withdraws pending redrives, and runs the app's own session-closing chain (`closeBrowserSession`, which also shuts down the runtime and releases any REPL or browser session) for every subagent runtime; a runtime with a turn still landing is closed when that turn settles. Close failures are logged and never fail the settlement. The driver does not close the execution port, MCP, or the session store, which it does not own. The three lookup maps (session, instance, question id) are cleared, so a late `respondToSubmit` or `respondToEscalation` finds nothing and does nothing.
+Two obligations follow `run-settled`. First, no ask may outlive its run: `complete`, `stop`, and `fail` all abort in-flight asks before writing the terminal status, so a subagent's turn cannot report into a settled engine and cannot keep spending tokens. Second, the subagent runtimes are released: `driver.dispose()` is called exactly once by the engine after `run-settled`, and it disposes the stall clock, unsubscribes from the governor, clears ask observation clocks, and runs the app's own session-closing chain (`closeBrowserSession`, which also shuts down the runtime and releases any REPL or browser session) for every subagent runtime; a runtime with a turn still landing is closed when that turn settles. Close failures are logged and never fail the settlement. The driver does not close the execution port, MCP, or the session store, which it does not own. The three lookup maps (session, instance, question id) are cleared, so a late `respondToSubmit` or `respondToEscalation` finds nothing and does nothing.
 
 ## Runtime error sentences
 
@@ -777,22 +789,78 @@ The author's `AgentPersona` is `{ system?: string; model?: ModelRef | string }` 
 
 ## How progress and completion reach the app and the main agent
 
-The engine produces structured payloads only. Every `RunEvent` becomes, in order, a `dwf_event` row with a sequence, a `DynamicWorkflowRunProgress` session event appended to the parent session with the payload below, and, for a few event types, a queued notification. The transcript cluster owns every rendering of these payloads and every sentence in a notification.
+The engine produces structured payloads only. Every engine `RunEvent` becomes, in order, a `dwf_event` row with a sequence, a `DynamicWorkflowRunProgress` session event appended to the parent session with the payload below, and, for a few event types, a queued notification. The same-serialization rule applies to this engine source; the host reconciliation observation specified below is not a journal event. The transcript cluster owns every rendering of these payloads and every sentence in a notification.
 
 ```ts
 export interface DynamicWorkflowRunProgressPayload {
   runId: string;
   toolCallId?: string;    // the CreateWorkflow call, for the tool card
-  sequence: number;       // the journal sequence
+  sequence: number;       // journal sequence; exactly 0 for the explicit host source
   eventType: string;      // the RunEvent type
   payload: Record<string, unknown>;   // the event minus its type, size-bounded
   truncated?: boolean;
+  observationSource?: "host-reconciliation";
 }
 ```
 
 Two enrichments happen at this seam: an event that names a subagent gains `actorSessionId`, minted by the same function the driver uses, so the GUI can open that subagent's transcript — `actor-created`, an ask's `node-dispatched`, and a cached ask's `node-settled`, the last two carrying the same `actor` ref and minting the same id; `run-settled` gains `resumable: true` when the status is `stopped`; `actor-created` gains `model` and an ask's `node-dispatched` gains `actorModel`, the canonical string the run's `modelBindings` give the persona's model name (absent when the persona names none). Cold replay casts its payloads through this same function, so a dispatch read back from the journal arrives in the identical envelope. The progress sink checks that the event belongs to the session it was created for and never throws into the engine.
 
 Notifications are enqueued by the core for `escalation-raised` (kind `escalation`), `hole-reached` (kind `hole`), `run-stalled` (kind `stall`), and settlement (`completed`, `errored`, `stopped` with the initiator and, for `provider`, the `ProviderStopDetails`); their texts, the `<task-notification>` envelope, and the delivery rules are in `transcript-and-notifications.md`. One more notice, the reminder, comes from no run event: the core reminds the main agent when the parent session has stayed idle while a live run has an open question or a waiting hole. The engine and the journal know nothing of it; it reads the run snapshot's `pendingQuestions` and `holes`, and its rules are in the same document under "Reminding an idle main agent". The main agent can also poll: the run snapshot exposes `runStatus`, `stopReason`, `failure`, `reports`, `artifacts`, and `pendingQuestions`, and the event log is readable by cursor through `listEvents`.
+
+### Host reconciliation observations: P2 stage A
+
+The lifecycle owner may correct an owned inactive uncertain run to `errored/RecoveryUncertain`.
+Only after the durable row and terminal cache agree does an independent host callback send
+an observation through the existing parent-runtime append, event-store sequence and publisher
+chain. It never appends a `dwf_event`, calls a driver, or claims that the engine settled.
+It reuses the session `run-settled` presentation kind with the explicit host source above;
+sequence 0 denotes no journal cursor. The run's existing journal watermark stays unchanged.
+
+One shared pure parser, `parseWorkflowRunProgressObservation`, lives in the existing
+`packages/shared/src/zcode-protocol-v4/workflow-runs.ts` and is exported through
+`@zcode/shared/zcode-protocol-v4`. Its exact narrow shape is specified in
+`docs/specs/workflow-uncertain-recovery.md`. Absence of an own source key keeps the legacy
+path. Any present unknown source or invalid host combination is rejected before runtime
+side effects or projection/watermark changes. Runtime emits a bounded reasonCode warning;
+the existing product event-normalizer / normalizeConversationEvent entry throws safely before
+projection mutation. The oversized product-projection file stays unchanged; the shared reducer
+keeps returning null for invalid input, including TUI callers. Gateway caches the failed apply and rethrows
+to the existing runtime event-sink warning, or cold hydration/subscription fails. Generic apply
+does not guarantee gateway.onError. Telemetry emits no host/invalid fact and must not be used
+as a diagnostic side channel. Producers and consumers use the same parser, not parallel validators.
+
+Every terminal reduction removes stale resumable/stopReason/supersededBy/error before adding
+this terminal's legal values; nodes, retained results, usage and lineage remain. The host
+observation has no launchInputId and is excluded from engine lifecycle telemetry and new
+completion notifications. It does not refresh journal-backed workspace queries: there is no
+new node, artifact or log fact. Terminal headers and controls read the updated run projection.
+If a query truly needs a terminal-triggered refresh, use that fact, never a fake journal cursor.
+
+Stage A is implemented in the isolated worktree with passing normal-dispatch checks;
+final review and original-repository integration are tracked separately. Compatibility
+covers supported old consumers of the new publisher's existing snapshot/delta shapes, not all
+old reducers that consume raw progress. Continuous and replayable output require separate tests.
+Online GREEN tests must accept `initialWires` before committing a `subscribeReserved`
+dispatch, following the server order, then capture real `context.notify` updates; an equivalent
+`subscribe` wrapper must prove activation and separately accept initial frames. The frozen RED's
+`gateway.subscribe` already commits internally, so there is no missing-commit defect. That RED
+proves warm snapshot behavior, not physical transport or continuous online delivery. `flushNow`
+alone is a logical projection probe and cannot replace notification capture or prove Desktop
+IPC/GUI or cross-Host behavior.
+Runtime-unavailable/append-rejected/sink errors remain observable failures. The sink uses the shared parser to retain legacy Engine
+error diagnostics while limiting host/invalid sync and async failures to stable reasonCode,
+safe identity and source classification; arbitrary error.message/String(error) is omitted. Record
+resolution is not a projection-commit receipt. Stage B remains mandatory and unimplemented:
+operation-bound internal eventId receipts and bounded commit/rebuild recovery, preserving
+event identity after partial append, without a new outbox, timer or permission-event bypass.
+Stage A alone cannot close P2, failure-recovery or unattended reliability acceptance.
+
+The existing serializer and telemetry files are precisely managed as `workflow-progress-payload`
+(agent-runtime/app) and `workflow-telemetry-facts` (conversation/app), requiring shared/zcode-cli.
+Each owns only its existing file, dedicated src contract directory and dedicated tests root;
+the five contract artifacts preserve public signatures/call paths and add no wrapper or state.
+The two contract tests must be collected by existing Vitest discovery. This registration does
+not widen an entire app/protocol directory or change exceptions, baseline or upstream snapshot.
 
 ## Token telemetry for subagents
 
@@ -881,3 +949,7 @@ The quota cell (B11) also checks what a resume will meet: right after the stop, 
 - The `escalate` question is validated only for non-emptiness; no length cap exists on the wire, though the notification is capped at 4,000 characters.
 - If the process dies between the predecessor's `stopped(superseded)` settlement and the successor's `createRun`, the predecessor points at a run id that does not exist. The window is a few microtasks wide; the snapshot reports `supersededBy` as recorded, and the model's next amend of that predecessor is allowed as for any settled run.
 - A `phase()` marker inside a concurrent fan-out callback stamps the wrong instances, because the engine keeps one current phase for the run; per-async-context attribution would lift the rule that markers stay outside callbacks.
+
+### Finite model recovery failures
+
+RecoveryExhausted is a node-level error from a final transient model failure after underlying recovery returns. The driver starts no additional turn. Scripts can catch that ask or use Promise.allSettled and await siblings; uncaught rejection retains the normal run failure semantics. Completed journal results are retained. Cancellation and accepted results win over stale failure callbacks. This does not guarantee a wall-clock deadline or rollback of already-issued effects. See docs/specs/workflow-bounded-recovery.md.

@@ -1,0 +1,12 @@
+{
+  "asarFiles": 28001,
+  "externalResourceFiles": 653,
+  "productName": "CCode",
+  "name": "@zcode/desktop",
+  "version": "0.0.3",
+  "coreLongLineMatches": [],
+  "forbiddenFiles": [],
+  "credentialFieldCandidates": [],
+  "bundleSha256": "c1f04126135792eaafc9fa34080525934e462a7a5b903682cb57fc56402c3bdf",
+  "capabilityMatches": true
+}

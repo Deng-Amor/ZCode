@@ -44,6 +44,7 @@ interface StartUpstreamReplayServerOptions {
   fixturePaths: string[];
   host?: string;
   port?: number;
+  diagnostics?: { mode: "metadata-only"; onFailure(): void };
 }
 
 interface UpstreamReplayFixtureFile {
@@ -135,6 +136,30 @@ type MutableCaptureRecord = E2ENetworkCaptureRecord;
 export async function startUpstreamReplayServer(
   options: StartUpstreamReplayServerOptions,
 ): Promise<UpstreamReplayServer> {
+  try {
+    if (options.diagnostics && !options.artifactWriter) throw new Error("missing writer");
+    return await startReplayServer(options);
+  } catch (error) {
+    if (options.diagnostics) throw safeReplayFailure(options.diagnostics);
+    throw error;
+  }
+}
+
+function safeReplayFailure(
+  diagnostics: NonNullable<StartUpstreamReplayServerOptions["diagnostics"]>,
+): Error {
+  // 修复依据：测试诊断错误可能包含受保护正文；只传无参数失败信号，不传播原异常。
+  try {
+    diagnostics.onFailure();
+  } catch {
+    /* 失败回调也不能绕过固定错误出口。 */
+  }
+  return new Error("WF4_SAFE_CAPTURE_FAILED");
+}
+
+async function startReplayServer(
+  options: StartUpstreamReplayServerOptions,
+): Promise<UpstreamReplayServer> {
   const host = options.host ?? "127.0.0.1";
   const requestedPort = options.port ?? 0;
   const artifactPath = resolve(options.artifactPath);
@@ -184,6 +209,8 @@ export async function startUpstreamReplayServer(
   let serverPort = requestedPort;
   let baseUrl = `http://${host}:${serverPort}`;
   let artifactWriteQueue = Promise.resolve();
+  const handlers = new Set<Promise<void>>();
+  let stopPromise: Promise<void> | undefined;
 
   const writeArtifact = () => {
     const artifact = {
@@ -220,18 +247,26 @@ export async function startUpstreamReplayServer(
       response.end();
       return;
     }
-    void handleReplayRequest(request, response, {
+    const handler = handleReplayRequest(request, response, {
       baseUrl,
       fixtureMatchCounts,
       fixtures,
       records,
       writeArtifact,
       holdStream,
+      diagnostics: options.diagnostics,
     }).catch((error: unknown) => {
       // Bug 根因：旧 handler 是裸 `void Promise`，capture 写入抛错后没有任何人
       // 收口 response，provider 只能一直等 socket。证据通道失败必须显式结束请求。
-      closeReplayResponseAfterHandlerError(response, error);
+      closeReplayResponseAfterHandlerError(
+        response,
+        options.diagnostics ? safeReplayFailure(options.diagnostics) : error,
+      );
     });
+    if (options.diagnostics) {
+      handlers.add(handler);
+      void handler.finally(() => handlers.delete(handler));
+    }
   });
 
   await new Promise<void>((resolveStart, rejectStart) => {
@@ -264,6 +299,35 @@ export async function startUpstreamReplayServer(
     host,
     port: serverPort,
     stop: () => {
+      if (options.diagnostics) {
+        // 修复依据：先发起 close 再取消 gate，避免受控流和关闭互等；同一 owner 只关闭一次。
+        stopPromise ??= (async () => {
+          const closed = closeServerListener(server);
+          const closing = closed.catch(() => {
+            throw safeReplayFailure(options.diagnostics!);
+          });
+          // 立即装上 rejection handler，drain 期间也不产生未处理异常。
+          void closing.catch(() => undefined);
+          try {
+            for (const gate of gates.values()) gate.cancel();
+            server.closeAllConnections();
+            await Promise.allSettled(handlers);
+            await closing;
+            await artifactWriteQueue.catch(() => undefined);
+            await writeArtifact();
+          } catch {
+            throw safeReplayFailure(options.diagnostics!);
+          } finally {
+            records.length = 0;
+            fixtures.length = 0;
+            fixtureMatchCounts.clear();
+            gates.clear();
+            handlers.clear();
+            artifactWriteQueue = Promise.resolve();
+          }
+        })();
+        return stopPromise;
+      }
       for (const gate of gates.values()) gate.cancel();
       return stopServer(server, writeArtifact);
     },
@@ -280,6 +344,7 @@ async function handleReplayRequest(
     records: MutableCaptureRecord[];
     writeArtifact(): Promise<void>;
     holdStream(id: string, response: ServerResponse): Promise<void>;
+    diagnostics?: StartUpstreamReplayServerOptions["diagnostics"];
   },
 ) {
   const startedAt = new Date().toISOString();
@@ -315,10 +380,13 @@ async function handleReplayRequest(
   );
   const fixture = fixtureIndex >= 0 ? context.fixtures[fixtureIndex] : undefined;
   if (!fixture) {
+    if (context.diagnostics) safeReplayFailure(context.diagnostics);
     const body = JSON.stringify(
       {
         error: {
-          message: `Missing Upstream e2e fixture for ${record.method} ${record.path}`,
+          message: context.diagnostics
+            ? "WF4_REPLAY_UNMATCHED"
+            : `Missing Upstream e2e fixture for ${record.method} ${record.path}`,
         },
       },
       null,

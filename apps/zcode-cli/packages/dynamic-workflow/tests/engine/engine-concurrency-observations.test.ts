@@ -41,7 +41,12 @@ describe("WorkflowEngine — 派发不经任何槽位", () => {
     const actor = engine.createActor("actor#1");
     const p = engine.ask("ask#1", actor, "A");
     await flush();
-    expect(eventTypes(driver)).toEqual(["run-started", "actor-created", "node-queued", "node-dispatched"]);
+    expect(eventTypes(driver)).toEqual([
+      "run-started",
+      "actor-created",
+      "node-queued",
+      "node-dispatched",
+    ]);
     expect(driver.startAskCount()).toBe(1);
     engine.askTurnEnded(inst("ask#1"), "RA");
     await expect(p).resolves.toBe("RA");
@@ -107,7 +112,11 @@ describe("WorkflowEngine — 派发不经任何槽位", () => {
     await flush();
     engine.stopRun(
       new WorkflowError("ProviderStop", "Model GLM-5.3 is not available.", {
-        providerStop: { kind: "model_unavailable", reason: "invalid_request", subagent: "actor#1@1" },
+        providerStop: {
+          kind: "model_unavailable",
+          reason: "invalid_request",
+          subagent: "actor#1@1",
+        },
       }),
     );
     const settled = driver.eventsOfType("run-settled")[0];
@@ -171,7 +180,14 @@ describe("WorkflowEngine — 并发观察事件", () => {
       delayMs: 20_000,
       retryAfterMs: 20_000,
     });
-    engine.concurrencyChanged({ key: "p/m", previous: 8, next: 4, reason: "rate_limited", lastGood: 4, cooldownMs: 20_000 });
+    engine.concurrencyChanged({
+      key: "p/m",
+      previous: 8,
+      next: 4,
+      reason: "rate_limited",
+      lastGood: 4,
+      cooldownMs: 20_000,
+    });
     engine.askExecuting(inst("ask#1"));
 
     expect(driver.eventsOfType("node-waiting")).toEqual([
@@ -191,7 +207,15 @@ describe("WorkflowEngine — 并发观察事件", () => {
       { type: "node-executing", instance: inst("ask#1") },
     ]);
     expect(driver.eventsOfType("concurrency-changed")).toEqual([
-      { type: "concurrency-changed", key: "p/m", previous: 8, next: 4, reason: "rate_limited", lastGood: 4, cooldownMs: 20_000 },
+      {
+        type: "concurrency-changed",
+        key: "p/m",
+        previous: 8,
+        next: 4,
+        reason: "rate_limited",
+        lastGood: 4,
+        cooldownMs: 20_000,
+      },
     ]);
     // 观察事件不写 dwf_node：节点记录仍是准入时的 running。
     expect(journal.getNode(RUN, "ask#1", 1)?.status).toBe("running");
@@ -208,7 +232,12 @@ describe("WorkflowEngine — 并发观察事件", () => {
     engine.askExecuting(inst("nope"));
     engine.askTurnEnded(inst("ask#1"), "RA");
     await p;
-    engine.askWaiting(inst("ask#1"), { cause: "backoff", reason: "timeout", attempt: 1, delayMs: 1 });
+    engine.askWaiting(inst("ask#1"), {
+      cause: "backoff",
+      reason: "timeout",
+      attempt: 1,
+      delayMs: 1,
+    });
     engine.askExecuting(inst("ask#1"));
     engine.complete("done");
     await engine.settled;
@@ -216,5 +245,31 @@ describe("WorkflowEngine — 并发观察事件", () => {
     expect(driver.eventsOfType("node-waiting")).toEqual([]);
     expect(driver.eventsOfType("node-executing")).toEqual([]);
     expect(driver.eventsOfType("concurrency-changed")).toEqual([]);
+  });
+});
+
+describe("WorkflowEngine — ask stall 只观察 live 实例", () => {
+  it("落 journal 并保持 running；未知、已结算 ask 和 run 均忽略", async () => {
+    const { engine, driver, journal } = setup();
+    const actor = engine.createActor("actor#1");
+    const p = engine.ask("ask#1", actor, "A");
+    await flush();
+    engine.askStalled(inst("missing"), { sinceMs: 1_200_000 });
+    engine.askStalled(inst("ask#1"), { sinceMs: 1_200_000, reason: "timeout" });
+    expect(driver.eventsOfType("node-stalled")).toEqual([
+      { type: "node-stalled", instance: inst("ask#1"), sinceMs: 1_200_000, reason: "timeout" },
+    ]);
+    expect(journal.listEvents(RUN, { types: "all", reportItems: "all" }).at(-1)?.event.type).toBe(
+      "node-stalled",
+    );
+    expect(journal.getNode(RUN, "ask#1", 1)?.status).toBe("running");
+    expect(driver.eventsOfType("run-stalled")).toEqual([]);
+    engine.askTurnEnded(inst("ask#1"), "done");
+    await p;
+    engine.askStalled(inst("ask#1"), { sinceMs: 1 });
+    engine.complete("done");
+    await engine.settled;
+    engine.askStalled(inst("ask#1"), { sinceMs: 1 });
+    expect(driver.eventsOfType("node-stalled")).toHaveLength(1);
   });
 });

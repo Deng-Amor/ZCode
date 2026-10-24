@@ -191,7 +191,8 @@ export const armsInitPromise = armsRum
       consoleError: true,
       crash: true,
       application: true,
-      api: true,
+      // 鉴权和核心Skill请求不交给SDK的rawRequest/evaluateApi路径。
+      api: { filters: [/\/system\/(?:auth|ccode-controller)\//] },
       rpc: true,
     },
     // 主进程 collectors：Electron 侧；renderer 侧见 browserCollectors + autoInject

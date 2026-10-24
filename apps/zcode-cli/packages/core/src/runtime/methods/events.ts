@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import { parseWorkflowRunProgressObservation } from "@zcode/shared/zcode-protocol-v4";
 import type { WorkspaceId } from "@zcode/contracts";
 import { buildExecutionStateEntry, readRuntimeExecutionState } from "../execution-state.js";
 import {
@@ -73,17 +75,6 @@ export function createEvent(
   payload: unknown,
   traceContext: TraceContext,
 ): SessionEvent {
-  // 全局规则已位于标准 system message；请求事件会被持久化并投影到客户端，只保留计数。
-  if (
-    this.config.globalSystemPrompt?.trim() &&
-    type === SessionEventType.ModelRequest &&
-    payload &&
-    typeof payload === "object" &&
-    "messages" in payload
-  ) {
-    const { messages, ...summary } = payload;
-    payload = { ...summary, messageCount: Array.isArray(messages) ? messages.length : 0 };
-  }
   return createSessionEvent(type, this.sessionId, payload, {
     turnId: traceContext.turnId,
     traceId: traceContext.traceId,
@@ -94,6 +85,32 @@ export async function appendEvent(
   this: AgentRuntimeInternal,
   event: SessionEvent,
   traceContext: TraceContext,
+): Promise<void> {
+  return appendEventStages.call(this, event, traceContext);
+}
+
+/** 仅供 host recorder 使用；公开 appendEvent 仍保持两参数合同。 */
+export async function appendEventWithHostStoredHandoff(
+  this: AgentRuntimeInternal,
+  event: SessionEvent,
+  traceContext: TraceContext,
+  onStored: (storedEvent: SessionEvent) => void,
+): Promise<void> {
+  if (
+    event.sessionId !== this.sessionId ||
+    event.type !== SessionEventType.DynamicWorkflowRunProgress ||
+    parseWorkflowRunProgressObservation(event.payload).kind !== "host-reconciliation"
+  ) {
+    throw new Error("Invalid workflow host observation");
+  }
+  return appendEventStages.call(this, event, traceContext, onStored);
+}
+
+async function appendEventStages(
+  this: AgentRuntimeInternal,
+  event: SessionEvent,
+  traceContext: TraceContext,
+  onStored?: (storedEvent: SessionEvent) => void,
 ): Promise<void> {
   // live sink 以前拿到的是 createSessionEvent 默认的 sequenceNumber=0，
   // 而 replay/read 路径拿到的是 eventStore 补号后的事件，导致同一 session 有两套顺序事实。
@@ -112,7 +129,29 @@ export async function appendEvent(
 
   let phase = "event_store.append";
   try {
-    const storedEvent = await this.eventStore.append(event);
+    const stored = onStored ? await appendHostObservation.call(this, event) : undefined;
+    const storedEvent = stored ? stored.event : await this.eventStore.append(event);
+    if (onStored) {
+      if (this.shuttingDown) throw new Error("Workflow host observation owner unavailable");
+      // 存储事实先于任何尾部 await；hook 失败只影响接单，不撤销事实或重放普通 sinks。
+      phase = "session_event.host_handoff";
+      try {
+        onStored(storedEvent);
+      } catch {
+        try {
+          this.logger?.warn("Workflow host observation handoff failed", {
+            event: "dynamic_workflow.host_observation.handoff_failed",
+            module: "core.runtime",
+            sessionId: this.sessionId,
+            reasonCode: "handoff_failed",
+          });
+        } catch {
+          // 诊断器自身故障也不能阻断既有 durable/usage/fanout。
+        }
+      }
+      // reject-but-present 只交接查证过的事实，不补播整条普通分发链。
+      if (stored?.recovered) return;
+    }
     phase = "session_event.persist_durable";
     await persistDurableSessionEvent.call(this, storedEvent, traceContext);
     phase = "session_event.record_usage";
@@ -156,6 +195,58 @@ export async function appendEvent(
     }
     throw error;
   }
+}
+
+const HOST_OBSERVATION_APPEND_ATTEMPTS = 2;
+
+async function appendHostObservation(
+  this: AgentRuntimeInternal,
+  event: SessionEvent,
+): Promise<{ event: SessionEvent; recovered: boolean }> {
+  const store = this.eventStore;
+  for (let attempt = 0; attempt < HOST_OBSERVATION_APPEND_ATTEMPTS; attempt += 1) {
+    if (this.shuttingDown) throw new Error("Workflow host observation owner unavailable");
+    let storedEvent: SessionEvent;
+    try {
+      storedEvent = await store.append(event);
+    } catch {
+      // 只有原 append 已拒绝且同一权威 store 明确缺席，才允许同身份再试一次。
+      let matches: SessionEvent[];
+      try {
+        matches = (await store.getEvents(event.sessionId)).filter((row) => row.id === event.id);
+      } catch {
+        throw new Error("Workflow host observation identity unverifiable");
+      }
+      if (this.shuttingDown) throw new Error("Workflow host observation owner unavailable");
+      if (matches.length === 1 && matchesHostIdentity(event, matches[0]!)) {
+        return { event: matches[0]!, recovered: true };
+      }
+      if (matches.length !== 0) throw new Error("Workflow host observation identity unverifiable");
+      if (attempt + 1 === HOST_OBSERVATION_APPEND_ATTEMPTS) {
+        throw new Error("Workflow host observation append rejected");
+      }
+      continue;
+    }
+    // fulfilled-but-conflicting 不是可重试的 append reject，禁止猜测身份或再次追加。
+    if (!matchesHostIdentity(event, storedEvent)) {
+      throw new Error("Workflow host observation identity unverifiable");
+    }
+    return { event: storedEvent, recovered: false };
+  }
+  throw new Error("Workflow host observation append rejected");
+}
+
+function matchesHostIdentity(expected: SessionEvent, stored: SessionEvent): boolean {
+  return (
+    stored.id === expected.id &&
+    stored.sessionId === expected.sessionId &&
+    stored.type === expected.type &&
+    stored.traceId === expected.traceId &&
+    stored.turnId === expected.turnId &&
+    Number.isSafeInteger(stored.sequenceNumber) &&
+    stored.sequenceNumber > 0 &&
+    isDeepStrictEqual(stored.payload, expected.payload)
+  );
 }
 
 function recordSessionEventAppendAggregate(

@@ -630,9 +630,32 @@ tells the two outcomes apart without being told which route its call took. The p
 account of that stop, and a second message saying "you stopped run A, amend it now" would
 send the model in a circle.
 
+### Unknown external outcomes
+
+A recorded `running` world-run may already have changed the outside world before its result
+was saved. Resume and amendment return `recovery_uncertain` with trusted run/site/ordinal
+identification and a message saying the outcome is unknown and requires verification. They
+do not recommend a new run or an automatic amendment. The service checks before controller
+authorization and again before launch or stopping a predecessor; its final scan and abort
+share a synchronous turn. The engine independently refuses that node after its hash check.
+Completed results and the unknown running row remain intact. An owned, non-live stopped or
+orphan run converges to `errored/RecoveryUncertain`, including the terminal registry read
+faces, without inventing host `dwf_event` rows. Both live and cold reads show the same failure
+and `resumable: false`.
+
+The existing owner/user-stop/provider permission rule is unchanged. Whatever its permission
+classification or approval result, an amendment with an unknown predecessor cannot create a
+replacement run. This version provides no force or replay approval entry point; continuing,
+cancelling or choosing another run ID does not verify the external effect. An active
+concurrency-only retune still follows its existing in-place route and creates no new run.
+The tool errors use the existing structured failure contract (Resume code 18, Amend code 30).
+V4 maps the refusal to `fault.command.workflowRunResumeRejected.recovery_uncertain`; the
+existing ACK.message reaches the pane's generic/detail display without a new notification
+kind or locale. See [the recovery spec](../specs/workflow-uncertain-recovery.md).
+
 ### What the model is told
 
-The tool description carries the routing and nothing else: amend to fix an errored run, to
+The tool description carries the routing and its unknown-outcome exception: amend to fix a script-error run without unknown effects, to
 extend a completed one, to repair a run that is visibly going wrong while it runs, in one
 call, with no stop first and no waiting for it to finish, and to change a run's settings
 without touching its script (neither `path` nor `script`); resuming a stopped run unchanged
@@ -1880,6 +1903,10 @@ and the transcript look is in `docs/dynamic-workflow/presentation.md` ("The sett
 | completed | no | every ask would replay from the cache, so nothing would run under the new settings |
 | not in the run projection | no | the pane has no settings to show |
 
+Configure visibility follows the existing UI predicate. If its action requires an amendment
+and the predecessor contains an unknown world-run, the service refuses it as described above;
+visibility or a user confirmation does not authorize replay of the unknown effect.
+
 The button needs a host callback, like Resume: a read-only session and a host with the gray
 release off (see "Gray release: the `dynamicWorkflow` feature key") get none. An agent without the
 command answers `fault.command.capabilityUnsupported`, which the popover shows as a rejection.
@@ -2105,7 +2132,7 @@ answer.
 |---|---|
 | `/dwf`, `/dwf list` | this session's runs (up to 20), one per line: `runId · label · status[/reason] · resumable · updated <time>`, plus a failure suffix |
 | `/dwf cancel [runId]` | cancels the run; without an id, cancels the single in-flight run or lists the candidates when there are several |
-| `/dwf resume <runId>` | resumes through the server, which alone decides resumability; rejections are shown with their reason (`not_found`, `not_resumable`, `already_running`, `script_missing`, `script_mismatch`, `compile_failed`, the last one followed by the bounded diagnostics) |
+| `/dwf resume <runId>` | resumes through the server, which alone decides resumability; rejections are shown with their reason (`not_found`, `not_resumable`, `already_running`, `script_missing`, `script_mismatch`, `compile_failed` with bounded diagnostics, or `recovery_uncertain` with trusted run/instance and verification detail) |
 
 A client without the capability answers "Dynamic workflow runs are not available in this
 client." The list is session-scoped; project-wide history is the model's `ListWorkflowRuns`.

@@ -2,6 +2,7 @@ import { createConfig } from "@zcode/adapters/config";
 import type { McpElicitationPort, McpNotificationPort } from "@zcode/contracts";
 import { createNodeModelSelectionFacade } from "@zcode/provider-node";
 import { createNodeLoggerFactory } from "@zcode/adapters/logging";
+import { createLockedContentClient, type LockedContentPort } from "@zcode/adapters/confidential-controller";
 import {
   createMcpAdapterConnectionPool,
   createMcpTelemetryTracker,
@@ -50,6 +51,25 @@ import { startProtocolResourceSampler } from "./zcode-protocol/resource-sampler.
 import { acquireProtocolStartupResource } from "./zcode-protocol/startup-resource.js";
 import { prepareZCodeTelemetryEnv, shutdownZCodeTelemetry } from "./telemetry-bootstrap.js";
 import type { ZCodeProcessResourceSampler } from "./process-resource-sampler.js";
+
+export function createAgentLockedContentClient(env: NodeJS.ProcessEnv, processLike: Pick<NodeJS.Process, "send" | "connected" | "on" | "once"> = process): ZCodeAppOptions["confidentialControllerLockedContent"] {
+  if (env.ZCODE_CONFIDENTIAL_CONTROLLER_IPC !== "1" || !processLike.send || !processLike.connected) return undefined;
+  const port: LockedContentPort = {
+    on(event, listener) {
+      if (event === "message") processLike.on("message", listener as (message: unknown) => void);
+      else processLike.once("disconnect", listener as () => void);
+    },
+    postMessage(message) {
+      if (!processLike.connected) throw new Error("confidential controller IPC is disconnected");
+      processLike.send?.(message);
+    },
+    start() {},
+  };
+  const client = createLockedContentClient(port);
+  return {
+    load: async () => ({ ...(await client.load()), files: [] }),
+  };
+}
 
 export function applyProtocolPresentationSurface(
   options: Omit<ZCodeAppOptions, "providerRegistry">,
@@ -153,7 +173,8 @@ export async function runZCodeProtocolAgent(
             }),
         }),
     });
-    const runtimeEnv = options.env ?? process.env;
+  const runtimeEnv = options.env ?? process.env;
+    const confidentialControllerLockedContent = createAgentLockedContentClient(runtimeEnv);
     options.lifecycle?.signal.throwIfAborted();
     providerRegistryRuntime = await acquireProtocolStartupResource({
       signal: options.lifecycle?.signal,
@@ -280,12 +301,10 @@ export async function runZCodeProtocolAgent(
             applyProtocolPresentationSurface(
               {
                 ...appOptions,
-                runtimeConfig: {
-                  ...appOptions.runtimeConfig,
-                  ...(options.globalSystemPrompt
-                    ? { globalSystemPrompt: options.globalSystemPrompt }
-                    : {}),
-                },
+                ...(confidentialControllerLockedContent
+                  ? { confidentialControllerLockedContent }
+                  : {}),
+                runtimeConfig: appOptions.runtimeConfig,
               },
               presentationSurface,
             ),

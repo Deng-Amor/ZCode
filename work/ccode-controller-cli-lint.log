@@ -1,0 +1,83 @@
+ WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> zcode-cli@0.17.0 lint E:\ZCode\apps\zcode-cli
+> node ../../scripts/run-cli-lint.mjs
+
+@zcode/adapters: warning src/storage/session-store/repositories/local-settings.ts eslint(no-control-regex): Unexpected control characters
+@zcode/adapters: warning src/mcp/oauth-refresh.ts unicorn(no-useless-spread): Using a spread operator here creates a new object unnecessarily.
+@zcode/adapters: warning src/mcp/oauth-refresh.ts unicorn(no-useless-spread): Using a spread operator here creates a new object unnecessarily.
+@zcode/adapters: warning src/model/runner-normalization.ts unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+@zcode/adapters: warning src/storage/session-store/repositories/session-inputs.ts unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+@zcode/adapters: warning src/storage/session-store/migrations.ts eslint(max-lines): File has too many lines (878).
+@zcode/adapters: warning src/mcp/resource-subscriptions.ts unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+@zcode/adapters: warning src/storage/session-store/sqlite-session-store.ts unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+@zcode/adapters: warning src/storage/session-store/sqlite-session-store.ts eslint(max-lines): File has too many lines (940).
+@zcode/adapters: warning src/mcp/pool.ts unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+@zcode/adapters: warning src/mcp/pool.ts unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+@zcode/adapters: warning src/model/runner-stream.ts eslint(max-lines): File has too many lines (1581).
+@zcode/adapters: warning src/config/schema.ts eslint(no-unused-vars): Variable 'unknownRecordSchema' is declared but never used. Unused variables should start with a '_'.
+@zcode/adapters: warning src/config/schema.ts eslint(no-unused-vars): Function 'readPositiveNumber' is declared but never used.
+@zcode/adapters: warning src/config/config-merger.ts unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+@zcode/adapters: warning src/config/config-merger.ts unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+@zcode/adapters: warning src/plugins/index.ts eslint(no-unused-vars): Variable 'rootPath' is declared but never used. Unused variables should start with a '_'.
+@zcode/adapters: warning src/plugins/official-marketplace.ts unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+@zcode/adapters: warning src/plugins/official-marketplace.ts unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+@zcode/adapters: warning src/plugins/marketplace.ts eslint(max-lines): File has too many lines (2678).
+@zcode/adapters: warning src/plugins/marketplace.ts eslint(no-unused-vars): Identifier 'writeFile' is imported but never used.
+@zcode/adapters: warning src/mcp/index.ts unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+@zcode/adapters: warning src/mcp/index.ts unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+@zcode/adapters: warning src/mcp/index.ts eslint(max-lines): File has too many lines (2133).
+@zcode/adapters: 接纳 2 项原样上游 max-lines 存量
+@zcode/bootstrap: warning src/zcode-protocol/server-types.ts eslint(no-unused-vars): Type 'ZCodeSessionMode' is imported but never used.
+@zcode/bootstrap: warning src/startup-logging.ts eslint(no-unused-vars): Type 'LoggerFactory' is imported but never used.
+@zcode/bootstrap: warning src/startup-logging.ts eslint(no-unused-vars): Type 'LogLevel' is imported but never used.
+@zcode/bootstrap: warning src/app/create-app.ts eslint(max-lines): File has too many lines (1285).
+@zcode/bootstrap: warning src/app/bundled-plugins.ts unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+@zcode/bootstrap: warning src/app/bundled-plugins.ts unicorn(prefer-string-starts-ends-with): Prefer String#startsWith over a regex with a caret.
+@zcode/bootstrap: warning src/mcp-config.ts eslint(no-unused-vars): Parameter 'token' is declared but never used. Unused parameters should start with a '_'.
+@zcode/bootstrap: warning src/zcode-protocol/storage-startup.ts eslint(no-unsafe-finally): Unsafe `finally` block.
+@zcode/bootstrap: warning src/zcode-protocol/session-mapper.ts eslint(max-lines): File has too many lines (1377).
+@zcode/bootstrap: warning src/app/runtime-config.ts eslint(no-unused-vars): Identifier 'resolveRegistryModelSelection' is imported but never used.
+@zcode/bootstrap: warning src/app/runtime-config.ts unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+@zcode/bootstrap: warning src/app/script-workflow-methods.ts eslint(no-unused-vars): Function 'createScriptWorkflowFacade' is declared but never used.
+@zcode/bootstrap: warning src/app/process-provider-registry-runtime.ts unicorn(no-useless-spread): Using a spread operator here creates a new object unnecessarily.
+@zcode/bootstrap: warning src/zcode-protocol/server.ts eslint(max-lines): File has too many lines (962).
+@zcode/bootstrap: warning src/app/session-facade.ts eslint(max-lines): File has too many lines (845).
+@zcode/bootstrap: warning src/plugins.ts eslint(max-lines): File has too many lines (1305).
+@zcode/bootstrap: warning src/plugins.ts eslint(no-unused-vars): Identifier 'sep' is imported but never used.
+@zcode/bootstrap: warning src/plugins.ts eslint(no-unused-vars): Variable 'workingDirectory' is declared but never used. Unused variables should start with a '_'.
+@zcode/bootstrap: warning src/zcode-protocol/v4-bridge.ts eslint(max-lines): File has too many lines (1918).
+@zcode/bootstrap: warning src/zcode-protocol/server-operations.ts eslint(no-unused-vars): Identifier 'createProtocolLogger' is imported but never used.
+@zcode/bootstrap: warning src/zcode-protocol/server-operations.ts eslint(no-unused-vars): Identifier 'protocolTraceFromTraceContext' is imported but never used.
+@zcode/bootstrap: warning src/zcode-protocol-v4/v4-gateway.ts unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+@zcode/bootstrap: warning src/zcode-protocol-v4/v4-gateway.ts unicorn(no-useless-spread): Using a spread operator here creates a new object unnecessarily.
+@zcode/bootstrap: warning src/zcode-protocol-v4/v4-gateway.ts unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+@zcode/bootstrap: warning src/zcode-protocol-v4/v4-gateway.ts unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+@zcode/bootstrap: warning src/zcode-protocol-v4/v4-gateway.ts unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+@zcode/bootstrap: warning src/zcode-protocol-v4/v4-gateway.ts eslint(max-lines): File has too many lines (3068).
+@zcode/bootstrap: 接纳 4 项原样上游 max-lines 存量
+@zcode/contracts: warning src/interfaces/session-store.port.ts eslint(max-lines): File has too many lines (1094).
+@zcode/contracts: 接纳 1 项原样上游 max-lines 存量
+@zcode/core: warning src/runtime-task/workflow-blocked-reminder.ts unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+@zcode/core: warning src/workflow/expert/runtime-context.ts eslint(no-unused-vars): Type 'WorkflowGraphNode' is imported but never used.
+@zcode/core: warning src/telemetry/runtime-telemetry.ts eslint(no-unused-vars): Variable 'NOOP_CALL' is declared but never used. Unused variables should start with a '_'.
+@zcode/core: warning src/runtime/methods/compact-active.ts eslint(no-unused-vars): Variable 'executionMaxOutputTokens' is declared but never used. Unused variables should start with a '_'.
+@zcode/core: warning src/runtime/methods/turn.ts unicorn(no-useless-spread): Using a spread operator here creates a new object unnecessarily.
+@zcode/core: warning src/runtime/methods/turn.ts eslint(max-lines): File has too many lines (1080).
+@zcode/core: warning src/runtime/methods/steering.ts eslint(max-lines): File has too many lines (1301).
+@zcode/core: warning src/runtime/methods/compact.ts eslint(no-unused-vars): Type 'ProviderContextUsageSnapshot' is imported but never used.
+@zcode/core: warning src/runtime/methods/turn-model-step.ts eslint(max-lines): File has too many lines (826).
+@zcode/core: warning src/context/sections/env-info.ts eslint(no-unused-vars): Variable 'GIT_LABEL' is declared but never used. Unused variables should start with a '_'.
+@zcode/core: warning src/context/sections/env-info.ts eslint(no-unused-vars): Variable 'NOT_A_GIT_REPOSITORY' is declared but never used. Unused variables should start with a '_'.
+@zcode/core: warning src/runtime/methods/session-fork.ts unicorn(no-useless-spread): Using a spread operator here creates a new object unnecessarily.
+@zcode/core: warning src/runtime/methods/file-rewind.ts eslint(no-unused-vars): Variable 'firstOperation' is declared but never used. Unused variables should start with a '_'.
+@zcode/core: 接纳 2 项原样上游 max-lines 存量
+debug: 接纳 2 项原样上游 max-lines 存量
+@zcode/dynamic-workflow: warning tests/lowering/expected/holes.js eslint(no-eval): eval can be harmful.
+@zcode/dynamic-workflow: warning tests/lowering/expected/holes.js eslint(no-eval): eval can be harmful.
+@zcode/dynamic-workflow: warning tests/lowering/expected/holes.js eslint(no-eval): eval can be harmful.
+@zcode/dynamic-workflow: warning tests/smoke/xiangqi-two-agent-match-b.dwf.ts unicorn(no-new-array): Do not use `new Array(singleArgument)`.
+@zcode/node-repl-host: warning src/cua-broker.ts eslint(no-unused-vars): Type 'Server' is imported but never used.
+@zcode/node-repl-host: warning src/server.ts eslint(no-unused-vars): Type 'NodeReplCuaBroker' is imported but never used.
+@zcode/telemetry: 接纳 1 项原样上游 max-lines 存量
+CLI lint: 0 errors, 71 warnings, 12 pristine upstream line-count diagnostics

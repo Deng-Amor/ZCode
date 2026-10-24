@@ -12,16 +12,10 @@ import { installProtocolStderrBoundary } from "./protocol-stderr.js";
 import { createProtocolProcessLifecycle } from "./protocol-lifecycle.js";
 import { isProtocolServerInvocation } from "./arguments.js";
 
-const CONTROLLER_IPC_ENV = "ZCODE_CONFIDENTIAL_CONTROLLER_IPC";
-
 void main();
 
 async function main(): Promise<void> {
   // 入口立即消费能力标记，避免之后派生的 Worker 把自身 IPC 误认成私有通道。
-  const controllerIpcRequested = process.env[CONTROLLER_IPC_ENV] === "1";
-  delete process.env[CONTROLLER_IPC_ENV];
-  let globalSystemPrompt: string | undefined;
-  let onControllerDisconnected: (() => void) | undefined;
   const argv = process.argv.slice(2);
   // 存储模式也可运行在 Host Worker 中，不能修改整个 Host 的进程名称。
   if (argv[0] !== STORAGE_MIGRATION_COMMAND && !argv.includes("--prepare-storage"))
@@ -57,17 +51,6 @@ async function main(): Promise<void> {
     : undefined;
 
   try {
-    if (controllerIpcRequested && lifecycle) {
-      if (!process.connected || typeof process.send !== "function")
-        throw new Error("Confidential controller channel unavailable");
-      const { readControllerBootstrap } = await import("@zcode/adapters/confidential-controller");
-      lifecycle.signal.throwIfAborted();
-      // 登出/切换账号关闭配置通道时停止旧进程，不让旧身份的启动配置继续使用。
-      onControllerDisconnected = () =>
-        lifecycle.requestShutdown(new Error("Controller startup configuration disconnected"));
-      process.on("disconnect", onControllerDisconnected);
-      globalSystemPrompt = (await readControllerBootstrap(process, lifecycle.signal)).systemPrompt;
-    }
     if (argv[0] !== STORAGE_MIGRATION_COMMAND && !argv.includes("--prepare-storage"))
       Object.assign(process.env, await ensureSeaRuntimeTools());
     lifecycle?.signal.throwIfAborted();
@@ -97,7 +80,6 @@ async function main(): Promise<void> {
     const { run } = await import("./run.js");
     lifecycle?.signal.throwIfAborted();
     const exitCode = await run(context, {
-      globalSystemPrompt,
       protocolLifecycle: lifecycle,
       protocolInput: lifecycle?.input,
     });
@@ -108,7 +90,6 @@ async function main(): Promise<void> {
     stderr.write(`${message}\n`);
     process.exitCode = 1;
   } finally {
-    if (onControllerDisconnected) process.off("disconnect", onControllerDisconnected);
     await waitForPendingWarnings();
     // 生命周期和 stderr guard 一直保留到实际退出，迟到的错误不能恢复递归写坏流。
     if (lifecycle) {

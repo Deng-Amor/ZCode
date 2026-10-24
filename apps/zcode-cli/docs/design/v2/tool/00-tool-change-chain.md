@@ -1,5 +1,31 @@
 # Tool Change Chain Spec
 
+## 私有总控激活入口
+
+保护模式的 SkillPort 只公布总控虚拟元数据，禁止保留名直接load；不暴露文件位置。
+即使普通Skill配置关闭，也保留该入口满足工作执行前授权。工具描述明确新工作输入
+须再激活，历史加载标记不替代授权；普通聊天不激活，正文仍经每请求私有注入。
+
+无论Runtime是否装配保护工厂，Skill 的保留名称“总控派单”均在普通文件load之前被拦截。
+私有激活端口缺失时返回固定不可用错误，禁止回退本地或旧受管签名包。
+普通适配器始终过滤保留名称、限定名与路径；自定义适配器返回的元数据也在工具输出前检查。
+仅调用Runtime激活端口，授权确认后返回固定成功文本，不返回正文/路径/版本包。
+错误只返回固定失败信息，不回退同名本地Skill。普通Skill保持原加载路径。
+激活完成必须仍属于同一activeTurn且未取消；根外部输入成功开始后清active，
+同一targetId复用版本scope，无targetId时以turnId划分范围。steering及内部通知不重置。
+子runtime创建时捕获父的已激活scope，父转聊天不影响后台子任务。
+启用保护工厂的根runtime在每个工具handler前检查激活状态；未激活只允许Skill、
+ToolSearch和AskUserQuestion，其余工作工具拒绝并提示先激活。这样同批并发/逆序的
+子任务启动不能抢先走未保护路径；激活失败不放行，成功后可重试。
+
+## 外部签发的受管技能消费（2026-10-20）
+
+部署方可信策略 → NodeSkillAdapter 验证完整签名包并保存内容快照 → 保留 ID/name 阻止普通根冒名 → Skill 工具读取同一份已验证正文。调用参数中的 roots、额外目录、namespace 和普通启停配置不得取消已注入受管身份。包验证失败必须诊断并拒绝，禁止同名 fallback。
+
+第一阶段不新增模型工具或写入能力。受管正文和 references/ 中的 UTF-8 文本以路径标注一起返回，baseDirectory 使用 managed-skill:// 虚拟版本地址；不是可写磁盘目录。脚本、二进制或其它尚不支持的附件令整个包不可消费，不能静默略过。内容超出请求预算时拒绝加载，不截断受管规则。
+
+回归覆盖签名篡改、策略/包调用后变更、同名及命名空间覆盖、显式 roots、损坏包无 fallback、普通技能兼容。Host/bootstrap 全入口接线、管理/同步统一约束及 OS 写入隔离仍是后续验收项；adapter 接口可用不代表已启用保护。
+
 ## Bash 临时输出路径隔离
 
 主应用及 workflow 子运行时装配 tmp 父目录 → execution adapter 实际准备具名输出文件 →
@@ -1809,6 +1835,15 @@ provider 的模型上。起因是主代理照技能示例自选「轻量」模�
 schema 只多这个回填键（模型面 JSON schema 不列，带 `predecessor` 的调用照旧在校验被拒）；事件与
 UI 不变，桌面只从前驱块读 `status` / `name`，旧客户端不受新键影响。
 
+## Workflow 单 ask 停滞观察（2026-10-21）
+
+对应 `../workflow-ask-stall-observation.md`。Driver 单 ask 模型重试时钟 → Engine
+`node-stalled` journal → 既有 RunProgress → Core 父会话普通后台文本通知。文本携带
+runId 与完整 ask identity；不新增工具参数、权限、RPC 或闭集 workflowNotification kind，
+不借用 run stall 元数据。桌面 continuous 与手机 replayable 沿现有文本投影降级，
+不改变 run 健康和节点状态。定向验证双 actor 隔离、生命周期清理及真实通知入队。
+WF4有限恢复替代Driver无限重驱：workflow工具侧模型请求继承WorkflowFinite，沿用现有adapter次数配置与workflow分类；Core每turn累计10次恢复不变，最终瞬态失败结束ask，不再新开turn。ask时钟仅观察有效网络retry，终态释放。保留工具权限/只读流准入/取消账本，不重放未知副作用；普通会话和SingleAttempt fallback保持原规则。详见../workflow-bounded-recovery.md。
+
 ## 插件使用归属
 
 ToolEntry 的 MCP pluginId 在执行准入时捕获，沿工具成功/失败事件、V4 tool.lifecycle、既有 agent_step 传递。保持 Skill 原字段兼容；普通 MCP 和未知归属留空，不从名字解析、不复制执行事件。仅增加可选 metadata，不改变工具执行、权限、存储和 continuous/replayable 交付。
@@ -1824,3 +1859,32 @@ MCP isError 和历史 hydration 不触发创建。工具执行、权限、原始
 ### 文档插件多窗口视图修复（2026-10-16）
 
 MCP app-only report_view 增加可选 viewId，release_view 释放指定窗口；模型 get_view 可选 viewId，缺省且存在多个上报窗口时返回歧义与清单。状态唯一归属 DocumentOwner，不由页面决定其他窗口的视图；旧客户端缺省 viewId 仍走 legacy 槽。show_in_viewer 保持专用 surface 路由并明确工具描述。导入仍为 app-only workspace 副作用；串行 admission、10 分钟未活动过期与部分文件清扫归 importer，完成副本不清理。覆盖 schema 到真实 MCP/AppBridge 的多窗口回归。
+
+## 流式工具取消账本收口（2026-10-21）
+
+流式模型成功返回后、tool drain 前若 turn 已取消，coordinator 先经既有 `abandon("cancelled")`
+记录 `tool_cancelled`，再终结 `TurnComplete(cancelled)`。工具 abort 仍沿原 signal，不重调度、
+不重试；250ms 只约束 handle 等待，不覆盖 ledger IO。回归在 `ModelComplete` 持久化等待点取消，
+验证一次工具执行及取消 ledger 恰一次且先于 turn 终态。合同见
+[流式工具执行与恢复](../model/streaming-tool-execution-and-recovery.md)。
+
+## WF5 未知效果恢复接口（实施中）
+
+恢复拒绝的新结构化分支由Contracts声明reason=recovery_uncertain与uncertainty身份；宿主与Engine边界见docs/specs/workflow-uncertain-recovery.md。旧工具调用中的message为可选旧分支字段，读取前按联合成员收窄，不能假定所有拒绝都有message。该类型兼容步骤不代表工具专用文案、真实RunService或强杀验收已完成；这些按WF5计划后续步骤完成后才整体集成。
+
+Task4实现合同：可信RunService拒绝 → Core ResumeWorkflowRun/AmendWorkflow 的既有ToolHandlerFailure（result/errorCode/message）或CLI事实文本；消息只含runId/siteId/ordinal、结果未知与需核实，不拼完整command/input/result，不推荐AmendWorkflow/CreateWorkflow/force自动重跑。工具描述明确未知world-run例外，不再宣称所有unfinished都重派发或所有errored都可修订。专用码分别使用Resume的18与Amend的30，不向handler任意追加未经executor保留合同的字段。CLI spec入口为[未知效果恢复](../workflow-uncertain-recovery.md)。
+
+V4链路为RunService的recovery_uncertain → interaction-background的`fault.command.workflowRunResumeRejected.recovery_uncertain`与安全message → 既有ACK.message → WorkflowRunSidePane的generic/detail。shared resume合同仅有fault前缀，无需新增通知kind或修改saved-workflow拒绝枚举；不扩UI词表/locale。用真实V4CommandExecutor定向验证reasonCode与message，协议映射证据不冒称桌面/手机E2E。
+
+权限分类保持既有owner、用户停止、新provider和CTRL规则；无论原分类或确认结果如何，未知效果均不得成功创建替代run，首版无force或重放批准入口。不为被拒请求新增审批，不复制未知状态到predecessor；服务最终扫描与Engine执行门独立保护效果。Task4已分别验证Core工具21项、CLI（node:test）22项、V4恢复6项与私有SQLite强杀1项；CLI typecheck/lint退出0。最终集成仍待主任务完成，未做客户端E2E、跨Host、掉电或24h soak。
+
+
+## P2-B 宿主观察同步与工具执行隔离（已审合同，未实施）
+
+[恢复保护spec](../../../../../../docs/specs/workflow-uncertain-recovery.md#p2-阶段-b宿主观察可靠性合同已审设计待实施)和[既有计划](../../../../../../docs/superpowers/plans/2026-10-21-workflow-uncertain-recovery.md#p2-b-观察可靠性实施计划待授权)固定本轮端到端链：journal/lifecycle拒绝已生效→host-only recorder创建一次event→真实store确认→**tail前同步onStored接单**→同record adapter实际admission证明/一次strict→既有publisher/profile wire→client apply。
+
+不改ResumeWorkflowRun/AmendWorkflow公开输入输出、permission谓词/allowlist、业务RunService port或safe amend scan→abort，不把投影receipt经工具拒绝结果上推；观察失败不能再执行世界效果。原appendEvent两参数、普通notify串行await、legacy Engine/TUI保持。host helper仅在store已settle且精确absent时同id串行再append一次；store已成功而普通sink pending，adapter必须已开始，不能等tail返回。hook throw安全隔离并继续普通fanout。
+
+host允许toolCallId；当前usage因事件类型非ToolCall*/Permission*而无upsert，不因字段缺席；registry读取仍可reject。stored交接必须先于此依赖。新增诊断只记录安全关联与reasonCode，不能复用会打印任意message的错误出口。
+
+对照B01–B23、普通tool/event/publisher/generic waiter/permission回归。P1renderer props、B协议wire、真实IPC/GUI与网络/长期运行分开标记；本轮仅文档计划，不新增schema/通知kind、依赖、policy例外或总控来源/授权能力。

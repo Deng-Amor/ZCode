@@ -23,35 +23,17 @@
 // 一次优化，也绝不拿一个正在变动的条数去截断转录。
 //
 // ——————————————————————————————————————————————————————————————
-// 这道闸门**关不住**的那一件事（2026-09-19 核实，已裁决接受）
+// 这道闸门仍不承诺等待所有外部操作完成
 // ——————————————————————————————————————————————————————————————
-// core 的 turn 主线是全 await 的：中止时依次 await `abandon("cancelled")`
-// （core/src/runtime/methods/turn-model-step.ts:365）、`persistCancelledStreamSnapshot`（同上 :372）
-// 与 `persistAssistantMessage`（同上 :405），所以本闸门等到的「turn 落地」确实蕴含这几步写完。
+// WF2 已将「流结束 → drain」窗口的取消纳入 abandon 保护区，不能再把该窗口描述为遗漏清理。
+// Core 会等待 turn 主线的取消快照与 assistant 消息持久化；但 abandon 只给在飞工具 250ms
+// 的收尾时间（core/src/runtime/methods/streaming-tool-coordinator.ts）。超出这个上界的外部
+// 操作仍可能继续，不能把 turn 落地或 abandon 账本当成副作用已回滚/全部停机的证明。
 //
-// 漏在外面的是**流式工具的 part**，两条路，都与消息条数无关：
-//   1. 同上 :633 的 `throwIfTurnAborted` 在跑 `abandon()` 的 try/catch **之外**（`drain()` 在 :646），
-//      于是「流结束 → drain」这段窗口里到达的中止会绕过 abandon，把在飞的流式工具句柄丢在外面；
-//   2. `abandon()` 自己只等 250ms（core/src/runtime/methods/streaming-tool-coordinator.ts:38、:121）。
-// 两条都让一个已经落库的 assistant 消息在本闸门放行之后**再长出一个 part**
-// （同上 :253 的 pending part、:294 的 running part）。等不到它：那些句柄与我们 await 的 promise
-// 已经脱钩，没有东西可等——这不是闸门宽严的问题。
-//
-// 为什么可以接受：**数条数在 amend 时，抄消息在后继子代理首次派发时**
-// （workflow-actor-transcript.ts 的 seedActorTranscript 按 `messageCount` 连 part 一起读）。
-// 夹在中间落地的 part 会被原样抄走；真正丢的只有「抄的那一刻仍然缺席」的 part。两种形态都能
-// 正常重水化（core/src/agent/session-history-hydrator.ts）：
-//   - part 在场但停在 pending / running：hydrator 只给 `completed` 与 `error` 单独分支，其余一律
-//     落到 :189 的 `INTERRUPTED_TOOL_RESULT`，所以 pending 与 running 走的是同一条路；
-//   - part 整个缺席：assistant 的工具调用取自**在场的** part（同上 :173 的 `addAssistant`），
-//     所以不会凭空出现一个没有结果的 `tool_use`；而一条既无正文、无 reasoning、无工具 part、
-//     也无 token 基线的 assistant 消息会被整条跳过（同上 :162），也不会留下空消息。
-// 两种形态都不会产出 provider 眼里非法的历史（不会有 tool_use 缺 tool_result，也不会有空
-// assistant）。另外 part 的三态是**同一个 part id 上的 upsert**（adapters 的
-// storage/session-store/repositories/messages.ts 的 `savePart`，`on conflict(id) do update`），
-// 不是追加，所以迟到的 part 不会让消息条数变化，也就动不了任何边界。
-//
-// 第 1 条的正解在 core（把那句 `throwIfTurnAborted` 挪进 abandon 的保护区内），不在本文件。
+// 修订时数消息条数，后继子代理首次派发时按 messageCount 连同 part 一起复制。迟到 part 在
+// 同一 id 上 upsert，不改变消息条数；pending/running 的 part 重水化为 interrupted 结果，
+// 缺席 part 不会凭空生成 tool_use。这里的静默账因此只约束已跟踪的 turn 写入链，无法给未知
+// 外部操作额外完成保证。
 
 import type { WorkflowClock } from "./workflow-driver-concurrency.js";
 import { defaultSchedule } from "./workflow-driver-helpers.js";
@@ -137,7 +119,7 @@ export function createActorSessionQuiescence(options?: {
 }
 
 /**
- * dispose 的每会话释放：退订活动观察、撤掉退避重驱、**登记静默**，再等在飞 turn 落地后关
+ * dispose 的每会话释放：退订活动观察、**登记静默**，再等在飞 turn 落地后关
  * actor runtime。
  *
  * 对每个 runtime 跑 app 关会话的**同一条**链——`closeBrowserSession` 内部依次 beginShutdown、
@@ -154,8 +136,6 @@ export function releaseActorSessions(
 ): void {
   for (const state of sessions) {
     state.modelActivity.unsubscribe();
-    state.cancelRedrive?.();
-    state.cancelRedrive = undefined;
     ledger.noteDisposed(state.sessionId, state.turn);
     const close = (): void => closeActorRuntime(deps, state);
     if (state.turn === undefined) close();

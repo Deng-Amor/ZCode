@@ -7,6 +7,13 @@
   },
   "exports": {
     "./confidential-controller": "./src/confidential-controller/index.ts",
+    "./expert-skills": "./src/expert-skills/index.ts",
+    "./audit-telemetry": "./src/audit-telemetry/index.ts",
+    "./skill-reflow-upload": "./src/skill-reflow-upload/index.ts",
+    "./controller-locked-store": "./src/controller-locked-store/index.ts",
+    "./platform-command-channel": "./src/platform-command-channel/index.ts",
+    "./skill-identity": "./src/skill-identity/index.ts",
+    "./ccode-platform-runtime": "./src/ccode-platform-runtime/index.ts",
     "./storage-startup": "./src/project-storage/startup-entry.ts",
     ".": "./src/index.ts",
     "./cua-permission-broker": "./src/cua-permission-broker/index.ts",

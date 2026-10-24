@@ -2279,6 +2279,24 @@ describe("v4 conversation workflowRunArtifactRead query", () => {
 });
 
 describe("v4 原生 resumeWorkflowRun", () => {
+  it("recovery_uncertain carries trusted safe identity and verification detail through the real executor", async () => {
+    const resumeWorkflowRun = vi.fn().mockResolvedValue({
+      ok: false,
+      reason: "recovery_uncertain",
+      uncertainty: { runId: "trusted-run", instance: { siteId: "world-site", ordinal: 2 } },
+    });
+    const record = makeRecord({ sessionId: "s1", resumeWorkflowRun });
+    const host = makeHost({ getRecord: (id) => (id === "s1" ? record : undefined) });
+    const failure = (await new V4CommandExecutor(host)
+      .execute(envelope("resumeWorkflowRun", { workId: "untrusted-request" }))
+      .catch((error: unknown) => error)) as Error & { reasonCode: string };
+    expect(failure.reasonCode).toBe("fault.command.workflowRunResumeRejected.recovery_uncertain");
+    expect(failure.message).toContain("trusted-run");
+    expect(failure.message).toContain("world-site#2");
+    expect(failure.message).toMatch(/outcome is unknown.*verif/iu);
+    expect(failure.message).not.toMatch(/untrusted-request|AmendWorkflow|CreateWorkflow|force/u);
+  });
+
   function makeRecord(app: Record<string, unknown>): V4SessionRecordView {
     return {
       app,

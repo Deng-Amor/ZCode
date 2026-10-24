@@ -36,15 +36,17 @@ export const ModelRequestSessionType = {
 /**
  * 模型请求的重试预算档位（runtime-only）。
  * - `default`：adapter 构造时解析出的 maxAttempts（默认 10 次重试）。
- * - `unbounded`：**瞬态**失败无上限重试（退避曲线不变、封顶 60s 后无限探测），永久失败照旧立即抛。
- *   给 workflow actor（taskType workflow_child / nested_workflow_child）使用：模型错误绝不是
- *   workflow 错误，唯一出口是用户 cancel。
+ * - `workflow-finite`：沿用 adapter 的 maxAttempts（默认首次 + 10 次重试），错误分类采用 workflow 策略表。
+ *   workflow actor（含 nested_workflow_child）及其工具侧请求默认使用此档。
+ * - `unbounded`：显式选择的 workflow 无限重试档；保留 workflow 错误策略表与退避曲线，
+ *   stop / context / cancel 仍立即退出，不受 maxAttempts 限制。
  * - `single-attempt`：本次请求 maxAttempts 收敛为 1，瞬态失败也不重试、首次失败即上抛。
  *   给带 selectionFallback 声明的执行作用域 Selection（如 Highspeed 加速卡）使用：失败后由 core
  *   退回会话模型继续本轮，适配层再按默认 10 次退避重试只会把降级拖到数分钟之后。
  */
 export const ModelRetryBudget = {
   Default: "default",
+  WorkflowFinite: "workflow-finite",
   Unbounded: "unbounded",
   SingleAttempt: "single-attempt",
 } as const;

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.astro/
+test-results/
+playwright-report/
+public/downloads/
+public/release.json
+.env
+.env.*

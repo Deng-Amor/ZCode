@@ -8,11 +8,181 @@ import {
   type UpstreamReplayServer,
 } from "./e2e/helpers/upstream-replay-server.js";
 import type { E2ENetworkCaptureArtifact } from "./e2e/helpers/network-capture-proxy.js";
+import { createWorkflowRecoverySafeCapture } from "./e2e/helpers/workflow-recovery-safe-capture.js";
 
 const SSE_EVENT_TEXT = 'event: message_start\ndata: {"type":"message_start"}\n\n';
 
 const activeServers: UpstreamReplayServer[] = [];
 const tempDirs: string[] = [];
+
+describe("WF4 metadata-only diagnostics", () => {
+  const sentinel = "SYNTHETIC_WF4_PRIVATE_SENTINEL_645774";
+
+  it("drains a held response before releasing state and makes repeated stop idempotent", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wf4-stop-"));
+    tempDirs.push(dir);
+    const fixture = join(dir, "fixture.json");
+    await writeFile(
+      fixture,
+      JSON.stringify({
+        version: 1,
+        fixtures: [
+          {
+            id: "actor-a-fault",
+            metadata: { timingPolicy: "controlled-stream" },
+            match: { pathIncludes: "/messages" },
+            response: {
+              statusCode: 200,
+              releaseAfterChunks: 1,
+              chunks: [
+                { offsetMs: 0, text: sentinel },
+                { offsetMs: 10000, text: sentinel },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    const writes: string[] = [];
+    const owner = createWorkflowRecoverySafeCapture(async (_path, value) => {
+      writes.push(JSON.stringify(value));
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const server = await startUpstreamReplayServer({
+      artifactPath: join(dir, "artifact.json"),
+      fixturePaths: [fixture],
+      artifactWriter: owner.artifactWriter,
+      diagnostics: { mode: "metadata-only", onFailure: owner.markFailed },
+    });
+    try {
+      const response = await fetch(`${server.baseUrl}/messages`, {
+        method: "POST",
+        body: sentinel,
+      });
+      const reader = response.body!.getReader();
+      await reader.read();
+      const stopping = server.stop();
+      expect(server.stop()).toBe(stopping);
+      await stopping;
+      await reader.read().catch(() => undefined);
+      await expectLoopbackPortAvailable(server.port);
+      expect(writes.every((value) => !value.includes(sentinel))).toBe(true);
+      expect(JSON.stringify(warning.mock.calls).includes(sentinel)).toBe(false);
+      expect(() => owner.assertHealthy()).toThrow("WF4_SAFE_CAPTURE_FAILED");
+    } finally {
+      await server.stop();
+      warning.mockRestore();
+    }
+  });
+
+  it("keeps later writer failure sticky across concurrent requests and final success", async () => {
+    let calls = 0;
+    const projected: string[] = [];
+    const owner = createWorkflowRecoverySafeCapture(async (_path, value) => {
+      calls += 1;
+      if (calls === 2) throw new Error(sentinel);
+      projected.push(JSON.stringify(value));
+    });
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const server = await startUpstreamReplayServer({
+      artifactPath: join(tmpdir(), "unused-wf4.json"),
+      fixturePaths: [],
+      artifactWriter: owner.artifactWriter,
+      diagnostics: { mode: "metadata-only", onFailure: owner.markFailed },
+    });
+    try {
+      const responses = await Promise.all(
+        [1, 2].map(() =>
+          fetch(`${server.baseUrl}/messages?${sentinel}`, { method: "POST", body: sentinel }).then(
+            (r) => r.text(),
+          ),
+        ),
+      );
+      expect(responses.every((value) => !value.includes(sentinel))).toBe(true);
+      await server.stop();
+      expect(projected.every((value) => !value.includes(sentinel))).toBe(true);
+      expect(JSON.stringify(warning.mock.calls).includes(sentinel)).toBe(false);
+      expect(() => owner.assertHealthy()).toThrow("WF4_SAFE_CAPTURE_FAILED");
+    } finally {
+      await server.stop();
+      warning.mockRestore();
+    }
+  });
+
+  it("closes the listener even when final write fails or failure callback throws", async () => {
+    let calls = 0;
+    const server = await startUpstreamReplayServer({
+      artifactPath: join(tmpdir(), "unused-wf4.json"),
+      fixturePaths: [],
+      artifactWriter: async () => {
+        if (++calls > 1) throw new Error(sentinel);
+      },
+      diagnostics: {
+        mode: "metadata-only",
+        onFailure() {
+          throw new Error(sentinel);
+        },
+      },
+    });
+    try {
+      await expect(server.stop()).rejects.toThrow("WF4_SAFE_CAPTURE_FAILED");
+      await expectLoopbackPortAvailable(server.port);
+      await expect(server.stop()).rejects.toThrow("WF4_SAFE_CAPTURE_FAILED");
+      expect(calls).toBe(2);
+    } finally {
+      await server.stop().catch(() => undefined);
+    }
+  });
+
+  it("requires a writer before reading fixture paths", async () => {
+    const options = {
+      artifactPath: join(tmpdir(), "unused-wf4-artifact.json"),
+      fixturePaths: [sentinel],
+      diagnostics: { mode: "metadata-only" as const, onFailure: vi.fn() },
+    };
+    await expect(startUpstreamReplayServer(options)).rejects.toThrow("WF4_SAFE_CAPTURE_FAILED");
+    expect(options.diagnostics.onFailure).toHaveBeenCalledOnce();
+  });
+
+  it("does not reflect unmatched query text into HTTP and marks the owner failed", async () => {
+    const onFailure = vi.fn();
+    const server = await startUpstreamReplayServer({
+      artifactPath: join(tmpdir(), "unused-wf4-artifact.json"),
+      artifactWriter: async () => {},
+      fixturePaths: [],
+      diagnostics: { mode: "metadata-only", onFailure },
+    } as Parameters<typeof startUpstreamReplayServer>[0]);
+    try {
+      const response = await fetch(`${server.baseUrl}/messages?value=${sentinel}`, {
+        method: "POST",
+        body: sentinel,
+      });
+      const body = await response.text();
+      expect(body.includes(sentinel)).toBe(false);
+      expect(body).toContain("WF4_REPLAY_UNMATCHED");
+      expect(onFailure).toHaveBeenCalled();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("sanitizes startup writer failures and releases its port", async () => {
+    const port = await reserveLoopbackPort();
+    const onFailure = vi.fn();
+    const options = {
+      artifactPath: join(tmpdir(), "unused-wf4-artifact.json"),
+      artifactWriter: async () => {
+        throw new Error(sentinel);
+      },
+      fixturePaths: [],
+      port,
+      diagnostics: { mode: "metadata-only" as const, onFailure },
+    };
+    await expect(startUpstreamReplayServer(options)).rejects.toThrow("WF4_SAFE_CAPTURE_FAILED");
+    expect(onFailure).toHaveBeenCalled();
+    await expectLoopbackPortAvailable(port);
+  });
+});
 
 afterEach(async () => {
   await Promise.all(activeServers.splice(0).map((server) => server.stop()));

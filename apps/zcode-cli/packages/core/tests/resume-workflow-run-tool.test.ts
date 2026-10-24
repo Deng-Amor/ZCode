@@ -122,6 +122,26 @@ describe("ResumeWorkflowRun handler — success", () => {
 });
 
 describe("ResumeWorkflowRun handler — structured failures", () => {
+  it("preserves trusted uncertainty identity and requires verification without replay advice", async () => {
+    const failure = asFailure(
+      await call(
+        "untrusted-request",
+        stubResumePort(async () => ({
+          ok: false,
+          reason: "recovery_uncertain",
+          uncertainty: { runId: "trusted-run", instance: { siteId: "world-site", ordinal: 2 } },
+        })),
+      ),
+    );
+    expect(failure.errorCode).toBe(18);
+    expect(failure.message).toMatch(/^workflow_run_recovery_uncertain:/u);
+    expect(failure.message).toContain("trusted-run");
+    expect(failure.message).toContain("world-site#2");
+    expect(failure.message).toMatch(/outcome is unknown.*verif/iu);
+    expect(failure.message).not.toMatch(/untrusted-request|AmendWorkflow|CreateWorkflow|force/u);
+    expect(failure).not.toHaveProperty("status");
+  });
+
   const REASONS = [
     "not_found",
     "not_resumable",

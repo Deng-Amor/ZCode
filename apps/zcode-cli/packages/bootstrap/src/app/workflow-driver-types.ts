@@ -179,9 +179,8 @@ export interface AgentRuntimeWorkflowDriverDeps {
    */
   runId?: string;
   /**
-   * 时钟与定时器（apps/zcode-cli/packages/dynamic-workflow/docs/execution-engine.md）：run 级 stall 时钟、瞬态失败的退避
-   * 重驱与会话静默的有界等待都用它。可注入只为测试假时间；`stallAfterMs` 缺省 20 分钟；
-   * `quiesceMs` 缺省 {@link AMEND_TRANSCRIPT_QUIESCE_MS}；`random` 供退避抖动。
+   * 时钟与定时器（apps/zcode-cli/packages/dynamic-workflow/docs/execution-engine.md）：run 级 stall 时钟与会话静默的有界等待都用它。可注入只为测试假时间；`stallAfterMs` 缺省 20 分钟；
+   * `quiesceMs` 缺省 {@link AMEND_TRANSCRIPT_QUIESCE_MS}。
    */
   clock?: WorkflowClock & {
     stallAfterMs?: number;
@@ -255,11 +254,4 @@ export interface SessionState {
   /** 本会话的 actor 身份（ProviderStop 明细点名触发停止的子代理）。 */
   readonly actor: ActorRef;
   readonly actorName: string | undefined;
-  /**
-   * 当前 ask 里 driver 侧瞬态重驱的次数：runner 放过来的瞬态失败（流恢复耗尽等）不结算节点，按退避曲线再起一轮。
-   * startAsk 归零。
-   */
-  transientAttempts: number;
-  /** 退避等待中的重驱闹钟；cancelAsk / dispose 撤掉。 */
-  cancelRedrive?: () => void;
 }

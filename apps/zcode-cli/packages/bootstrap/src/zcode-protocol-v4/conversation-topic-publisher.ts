@@ -247,7 +247,35 @@ export function appendConversationSubscriberBuffer(
   return { kind: "buffered", deltas, encodedBytes };
 }
 
+const preparedRehydrationBrand: unique symbol = Symbol("preparedRehydration");
+
+/** 仅供本包恢复链路使用；不能构造、序列化或跨 publisher 接管。 */
+export interface PreparedConversationRehydration {
+  readonly [preparedRehydrationBrand]: true;
+  readonly candidate: Pick<
+    ConversationTopicPublisher,
+    | "getSnapshot"
+    | "getWireSnapshotLogicalBytes"
+    | "seedConfig"
+    | "seedUsage"
+    | "seedSubagents"
+    | "seedSharedContextImport"
+    | "ingest"
+  >;
+  readonly appliedEventIds: readonly string[];
+  readonly skippedEventIds: readonly string[];
+}
+
 export class ConversationTopicPublisher {
+  private readonly preparedRehydrations = new WeakMap<
+    PreparedConversationRehydration,
+    {
+      candidate: ConversationTopicPublisher;
+      usedBatchHydration: boolean;
+      strict: boolean;
+      active: boolean;
+    }
+  >();
   readonly topic: string;
   private projection: ProductProjection;
   private readonly now: () => number;
@@ -649,6 +677,17 @@ export class ConversationTopicPublisher {
     events: readonly SessionEvent[],
     options: { onPayloadTooLarge?: (error: ProjectionPayloadTooLargeError) => void } = {},
   ): void {
+    this.adoptPreparedRehydration(this.prepareRehydration(events, options));
+  }
+
+  prepareRehydration(
+    events: readonly SessionEvent[],
+    options: {
+      onPayloadTooLarge?: (error: ProjectionPayloadTooLargeError) => void;
+      excludedEventIds?: ReadonlySet<string>;
+      requiredEventId?: string;
+    } = {},
+  ): PreparedConversationRehydration {
     // 重放不能先清空当前 projection/log/subscription delivery，再逐条 replay：
     // 任一普通 reducer 异常都会把 topic 留在半重放状态。候选 publisher 不承接订阅，
     // 完整 replay（含 logical size 校验）成功后才一次 adopt 权威数据面。
@@ -658,7 +697,17 @@ export class ConversationTopicPublisher {
       subscriberBufferMaxOps: this.subscriberBufferMaxOps,
       subscriberBufferMaxBytes: this.subscriberBufferMaxBytes,
     });
-    const usedBatchHydration = candidate.tryBatchHydration(events);
+    const excluded = new Set(options.excludedEventIds);
+    const applied = new Set<string>();
+    const skipped = new Set<string>();
+    const replay = events.filter((event) => {
+      if (!excluded.has(event.id)) return true;
+      skipped.add(event.id);
+      return false;
+    });
+    // strict 恢复必须逐事件取得真实 admission 证明，不能由 loaded ids 或 batch 水位猜测。
+    const strict = options.requiredEventId !== undefined || options.excludedEventIds !== undefined;
+    const usedBatchHydration = !strict && candidate.tryBatchHydration(replay, applied);
     if (!usedBatchHydration) {
       // 保守上界超限不代表权威 projection 一定超限；重新从空候选走原逐事件原子
       // admission，保留 16MiB fail-closed 与“拒绝单个 oversize 后继续终态”的旧语义。
@@ -668,18 +717,94 @@ export class ConversationTopicPublisher {
         subscriberBufferMaxOps: this.subscriberBufferMaxOps,
         subscriberBufferMaxBytes: this.subscriberBufferMaxBytes,
       });
-      for (const event of events) {
+      applied.clear();
+      for (const event of replay) {
         try {
           candidate.ingest(event);
+          applied.add(event.id);
         } catch (error) {
           if (!(error instanceof ProjectionPayloadTooLargeError)) throw error;
+          if (event.id === options.requiredEventId) throw error;
           if (!options.onPayloadTooLarge) throw error;
           options.onPayloadTooLarge(error);
+          skipped.add(event.id);
         }
       }
     }
 
+    if (options.requiredEventId !== undefined && !applied.has(options.requiredEventId)) {
+      throw new Error("required rehydration event was not applied");
+    }
+    const state = { candidate, usedBatchHydration, strict, active: true };
+    const access = <T>(operation: () => T): T => {
+      if (!state.active) throw new Error("prepared rehydration is no longer active");
+      try {
+        return operation();
+      } catch (error) {
+        // seed/tail 失败的候选不可再次接管，也不能在 adopt 后通过旧引用修改 live 投影。
+        state.active = false;
+        throw error;
+      }
+    };
+    const prepared: PreparedConversationRehydration = Object.freeze({
+      [preparedRehydrationBrand]: true as const,
+      candidate: Object.freeze({
+        // 仅复制候选读面，防止缓存的嵌套引用在 adopt 后绕过失效门禁修改 live。
+        getSnapshot: () => access(() => structuredClone(candidate.getSnapshot())),
+        getWireSnapshotLogicalBytes: () => access(() => candidate.getWireSnapshotLogicalBytes()),
+        seedConfig: (seed: SessionConfigSeed) => access(() => candidate.seedConfig(seed)),
+        seedUsage: (seed: SessionUsageSeed) => access(() => candidate.seedUsage(seed)),
+        seedSubagents: (seed: SessionSubagentsSeed) => access(() => candidate.seedSubagents(seed)),
+        seedSharedContextImport: (
+          source: ConversationSnapshot["sharedContextImport"] | null | undefined,
+        ) => access(() => candidate.seedSharedContextImport(source)),
+        ingest: (event: SessionEvent) =>
+          access(() => {
+            if (excluded.has(event.id)) {
+              skipped.add(event.id);
+              return;
+            }
+            candidate.ingest(event);
+            applied.add(event.id);
+          }),
+      }),
+      get appliedEventIds() {
+        return Object.freeze([...applied]);
+      },
+      get skippedEventIds() {
+        return Object.freeze([...skipped]);
+      },
+      toJSON() {
+        throw new Error("prepared rehydration cannot be serialized");
+      },
+    });
+    this.preparedRehydrations.set(prepared, state);
+    return prepared;
+  }
+
+  adoptPreparedRehydration(prepared: PreparedConversationRehydration): void {
+    const state = this.preparedRehydrations.get(prepared);
+    if (!state?.active) throw new Error("invalid prepared rehydration owner or state");
+    const { candidate, usedBatchHydration } = state;
+    state.active = false;
+    this.preparedRehydrations.delete(prepared);
+
     const previous = this.projection.getSnapshot();
+    if (state.strict) {
+      // 旧 base 必须严格小于新 floor；先拒绝非法/溢出水位，不能靠 Math.max 掩盖或归零。
+      const minimumSeq = previous.seq + 1;
+      const minimumRevision = previous.revision + 1;
+      if (
+        ![previous.seq, previous.revision, minimumSeq, minimumRevision].every(
+          (value) => Number.isSafeInteger(value) && value >= 0,
+        ) ||
+        minimumSeq <= previous.seq ||
+        minimumRevision <= previous.revision
+      ) {
+        throw new RangeError("invalid recovery boundary");
+      }
+      candidate.projection.advanceRecoveryBoundary(minimumSeq, minimumRevision);
+    }
     if (previous.runtimeInitialization) {
       // 首帧已对外发布，最终恢复不得让同一 epoch 的 seq/revision 倒退。
       candidate.projection.setRuntimeInitialization(
@@ -688,9 +813,18 @@ export class ConversationTopicPublisher {
         previous.revision + 1,
       );
     }
-    this.projection = candidate.projection;
-    const current = this.getSnapshot();
+    // strict 的 seeds/tail 可能在 prepare 之后变化；最后同步核限额，失败仍不污染 live。
+    if (state.strict) {
+      const logicalBytes = candidate.getWireSnapshotLogicalBytes();
+      if (logicalBytes > PROTOCOL_V4_LIMITS.logicalFrameAssemblyMaxBytes) {
+        throw new ProjectionPayloadTooLargeError(logicalBytes);
+      }
+      candidate.wireSnapshotBytesUpperBound = logicalBytes;
+    }
+    const current = candidate.getSnapshot();
     if (
+      // strict 接管必须作废旧 reservation；普通初始化继续保留同结构行的增量补丁合同。
+      !state.strict &&
       previous.runtimeInitialization &&
       previous.rows.window.length === current.rows.window.length &&
       previous.rows.window.every(
@@ -708,12 +842,16 @@ export class ConversationTopicPublisher {
         if (JSON.stringify(row) !== JSON.stringify(previous.rows.window[index]))
           deltas.push({ op: "row.upserted", row });
       });
-      this.wireSnapshotBytesUpperBound = this.measureWireSnapshotBytes(this.getWireSnapshot());
+      const wireBytes = candidate.getWireSnapshotLogicalBytes();
+      this.projection = candidate.projection;
+      this.wireSnapshotBytesUpperBound = wireBytes;
       this.appendDeltas(current.seq, deltas);
       return;
     }
 
-    if (usedBatchHydration || previous.runtimeInitialization) {
+    this.projection = candidate.projection;
+    if (state.strict || usedBatchHydration || previous.runtimeInitialization) {
+      // strict 的重建 seq 不代表旧日志同一前缀；新水位以上才允许恢复增量。
       // 批量重放会把派生 actions 延迟到最终 materialization；若允许客户端
       // 用逐事件旧快照的中间 base 续这份日志，batch 从未持有的旧 canEdit/canRetry 无法被
       // 定点撤销。rehydrate 本来就要求所有现有订阅 resync，因此在当前 seq 建立 snapshot
@@ -742,7 +880,7 @@ export class ConversationTopicPublisher {
    * 完整 schema 上界；已滑出 tail 的保守增长在触及 payload limit 时通过精确测量消除。
    * 最终只做一次全行 actions 收敛，整体成本随事件/行数线性增长。
    */
-  private tryBatchHydration(events: readonly SessionEvent[]): boolean {
+  private tryBatchHydration(events: readonly SessionEvent[], applied: Set<string>): boolean {
     this.projection.beginHydrationReplay();
     let measuredBytes = this.wireSnapshotBytesUpperBound;
     let measuredSequenceNumberBytes = hydrationSequenceNumberBytes(
@@ -813,6 +951,7 @@ export class ConversationTopicPublisher {
         upperBound = measuredBytes + actionBytesUpperBound;
       }
       if (upperBound > projectionLimit) return false;
+      applied.add(event.id);
     }
 
     if (events.length === 0) {

@@ -1,0 +1,244 @@
+ M .oxlintrc.json
+ M AGENTS.md
+ M apps/zcode-cli/docs/design/v2/model/stream-error-retry.md
+ M apps/zcode-cli/docs/design/v2/model/streaming-tool-execution-and-recovery.md
+ M apps/zcode-cli/docs/design/v2/skill.md
+ M apps/zcode-cli/docs/design/v2/tool/00-tool-change-chain.md
+ M apps/zcode-cli/packages/adapters/src/commands/roots.ts
+ M apps/zcode-cli/packages/adapters/src/config/file-config.adapter.ts
+ M apps/zcode-cli/packages/adapters/src/context/index.ts
+ M apps/zcode-cli/packages/adapters/src/logging/index.ts
+ M apps/zcode-cli/packages/adapters/src/model/retry-budget.ts
+ M apps/zcode-cli/packages/adapters/src/model/runner-debug.ts
+ M apps/zcode-cli/packages/adapters/src/model/runner-generate.ts
+ M apps/zcode-cli/packages/adapters/src/model/runner-stream.ts
+ M apps/zcode-cli/packages/adapters/src/model/workflow-model-failure-policy.ts
+ M apps/zcode-cli/packages/adapters/src/skills/roots.ts
+ M apps/zcode-cli/packages/adapters/src/storage/session-store/paths.ts
+ M apps/zcode-cli/packages/adapters/src/storage/session-store/sqlite-session-store.ts
+ M apps/zcode-cli/packages/adapters/src/workflow/index.ts
+ M apps/zcode-cli/packages/adapters/tests/retry-budget.test.ts
+ M apps/zcode-cli/packages/adapters/tests/workflow-model-failure-policy.test.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/create-app.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/dynamic-workflow-run-lifecycle.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/dynamic-workflow-run-progress-payload.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/dynamic-workflow-run-progress-sink.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/dynamic-workflow-run-reconcile.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/dynamic-workflow-run-service.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/dynamic-workflow-run-submit.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/script-workflow-tool-port.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/script-workflow-utils.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/types.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/workflow-driver-concurrency.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/workflow-driver-helpers.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/workflow-driver-model-failure.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/workflow-driver-quiescence.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/workflow-driver-types.ts
+ M apps/zcode-cli/packages/bootstrap/src/app/workflow-driver.ts
+ M apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/commands/handlers/interaction-background.ts
+ M apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/conversation-telemetry-workflow-facts.ts
+ M apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/conversation-topic-publisher.ts
+ M apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/event-normalizer.ts
+ M apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/product-projection.ts
+ M apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/v4-gateway.ts
+ M apps/zcode-cli/packages/bootstrap/src/zcode-protocol/server-operations.ts
+ M apps/zcode-cli/packages/bootstrap/src/zcode-protocol/v4-bridge.ts
+ M apps/zcode-cli/packages/bootstrap/tests/conversation-topic-publisher.test.ts
+ M apps/zcode-cli/packages/bootstrap/tests/dynamic-workflow-run-roster.test.ts
+ M apps/zcode-cli/packages/bootstrap/tests/dynamic-workflow-run-service.test.ts
+ M apps/zcode-cli/packages/bootstrap/tests/v4-gateway.test.ts
+ M apps/zcode-cli/packages/bootstrap/tests/v4-native-interaction-background.test.ts
+ M apps/zcode-cli/packages/bootstrap/tests/workflow-driver-concurrency.test.ts
+ M apps/zcode-cli/packages/bootstrap/tests/workflow-driver-seat-gate.test.ts
+ M apps/zcode-cli/packages/bootstrap/tests/workflow-driver.test.ts
+ M apps/zcode-cli/packages/cli/src/command-center/handlers/dwf.ts
+ M apps/zcode-cli/packages/cli/tests/dwf-command.test.ts
+ M apps/zcode-cli/packages/contracts/src/events/session.events.ts
+ M apps/zcode-cli/packages/contracts/src/interfaces/dynamic-workflow-run.port.ts
+ M apps/zcode-cli/packages/contracts/src/model/index.ts
+ M apps/zcode-cli/packages/core/src/context/sections/desktop.ts
+ M apps/zcode-cli/packages/core/src/context/sections/skills.ts
+ M apps/zcode-cli/packages/core/src/runtime-task/notification.ts
+ M apps/zcode-cli/packages/core/src/runtime/agent-runtime.ts
+ M apps/zcode-cli/packages/core/src/runtime/methods/dynamic-workflow-run-progress.ts
+ M apps/zcode-cli/packages/core/src/runtime/methods/events.ts
+ M apps/zcode-cli/packages/core/src/runtime/methods/index.ts
+ M apps/zcode-cli/packages/core/src/runtime/methods/model-request-session-type.ts
+ M apps/zcode-cli/packages/core/src/runtime/methods/turn-model-step.ts
+ M apps/zcode-cli/packages/core/src/tool/handlers/amend-workflow-description.ts
+ M apps/zcode-cli/packages/core/src/tool/handlers/amend-workflow-source.ts
+ M apps/zcode-cli/packages/core/src/tool/handlers/amend-workflow.ts
+ M apps/zcode-cli/packages/core/src/tool/handlers/resume-workflow-run.ts
+ M apps/zcode-cli/packages/core/tests/dynamic-workflow-run-progress.test.ts
+ M apps/zcode-cli/packages/core/tests/model-retry-budget.test.ts
+ M apps/zcode-cli/packages/core/tests/resume-workflow-run-tool.test.ts
+ M apps/zcode-cli/packages/core/tests/runtime-model-admission.test.ts
+ M apps/zcode-cli/packages/core/tests/runtime-streaming-tool-part-identity.test.ts
+ M apps/zcode-cli/packages/core/tests/workflow-terminal-notification.test.ts
+ M apps/zcode-cli/packages/dynamic-workflow-runtime/src/harness.ts
+ M apps/zcode-cli/packages/dynamic-workflow-runtime/tests/provider-stop.test.ts
+ M apps/zcode-cli/packages/dynamic-workflow/docs/execution-engine.md
+ M apps/zcode-cli/packages/dynamic-workflow/src/engine/engine-world.ts
+ M apps/zcode-cli/packages/dynamic-workflow/src/engine/engine.ts
+ M apps/zcode-cli/packages/dynamic-workflow/src/engine/errors.ts
+ M apps/zcode-cli/packages/dynamic-workflow/src/engine/index.ts
+ M apps/zcode-cli/packages/dynamic-workflow/src/engine/types.ts
+ M apps/zcode-cli/packages/dynamic-workflow/src/index.ts
+ M apps/zcode-cli/packages/dynamic-workflow/tests/engine/engine-concurrency-observations.test.ts
+ M apps/zcode-cli/packages/node-repl-host/dist-types/browser-bridge.d.ts
+ M apps/zcode-cli/packages/node-repl-host/dist-types/cua-bridge.d.ts
+ M apps/zcode-cli/packages/node-repl-host/dist-types/cua-broker.d.ts
+ M apps/zcode-cli/packages/node-repl-host/dist-types/process-lifecycle.d.ts
+ M apps/zcode-cli/packages/node-repl-host/dist-types/result.d.ts
+ M apps/zcode-cli/packages/node-repl-host/dist-types/runtime-bridge.d.ts
+ M apps/zcode-cli/packages/node-repl-host/dist-types/server.d.ts
+ M apps/zcode-cli/packages/node-repl-host/dist-types/tool-contract.d.ts
+ M architecture-policy.yaml
+ M docs/conversation-session-case-catalog.md
+ M docs/dynamic-workflow/authoring.md
+ M docs/dynamic-workflow/concurrency.md
+ M docs/dynamic-workflow/launch.md
+ M docs/dynamic-workflow/transcript-and-notifications.md
+ M docs/specs/ccode-confidential-controller.md
+ M docs/specs/ccode-startup-global-prompt.md
+ M docs/testing/conversation-session-e2e-coverage-matrix.md
+ M package.json
+ M packages/desktop/build/icon.ico
+ M packages/desktop/build/icon_installer.ico
+ M packages/desktop/build/icon_windows.png
+ M packages/desktop/build/installer.nsh
+ M packages/desktop/electron-builder.config.js
+ M packages/desktop/scripts/build-metadata.mjs
+ M packages/desktop/scripts/desktop-product-identity.mjs
+ M packages/desktop/scripts/dev.mjs
+ M packages/desktop/scripts/devElectronAppBundle.mjs
+ M packages/desktop/scripts/run-production-build.mjs
+ M packages/desktop/src/main/about.ts
+ M packages/desktop/src/main/aboutWindow.ts
+ M packages/desktop/src/main/appARMSBootstrap.ts
+ M packages/desktop/src/main/autoUpdater.ts
+ M packages/desktop/src/main/desktopApplicationMenu.ts
+ M packages/desktop/src/main/desktopCommandHandlers.ts
+ M packages/desktop/src/main/desktopDataBaseDirBootstrap.ts
+ M packages/desktop/src/main/desktopDeepLinkUrl.ts
+ M packages/desktop/src/main/desktopEarlyDataBaseDirBootstrap.ts
+ M packages/desktop/src/main/desktopFinderOpenFolderWorkflow.ts
+ M packages/desktop/src/main/desktopLinuxAppImageIcon.ts
+ M packages/desktop/src/main/desktopLinuxDeepLinkRegistration.ts
+ M packages/desktop/src/main/desktopOAuthDeepLink.ts
+ M packages/desktop/src/main/desktopRuntimeEnv.ts
+ M packages/desktop/src/main/desktopTray.ts
+ M packages/desktop/src/main/desktopWindowChrome.ts
+ M packages/desktop/src/main/exportLogs.ts
+ M packages/desktop/src/main/index.ts
+ M packages/desktop/src/main/remoteCdn.ts
+ M packages/desktop/src/renderer/index.html
+ M packages/desktop/test/e2e/conversation-session/conversation-session-v4-queue-drain.test.ts
+ M packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-queued-command-restart.test.ts
+ M packages/desktop/test/e2e/helpers/upstream-replay-server.ts
+ M packages/desktop/test/remoteCdn.test.ts
+ M packages/desktop/test/upstreamReplayServer.test.ts
+ M packages/desktop/wdio.conf.ts
+ M packages/services/src/commands/commandsService.ts
+ M packages/services/src/hooks/hooksService.ts
+ M packages/services/src/node.ts
+ M packages/services/src/oauth/oauthService.ts
+ M packages/services/src/oauth/providers/bigmodelProviderConfig.ts
+ M packages/services/src/oauth/providers/configUtils.ts
+ M packages/services/src/oauth/providers/zaiProviderConfig.ts
+ M packages/services/src/setting/settingService.ts
+ M packages/services/src/skills/skillsService.ts
+ M packages/services/src/subagents/subagentStorage.ts
+ M packages/shared/src/desktopMenu.ts
+ M packages/shared/src/platform.ts
+ M packages/shared/src/zcode-protocol-v4/workflow-runs-reducer.ts
+ M packages/shared/src/zcode-protocol-v4/workflow-runs.ts
+ M packages/ui/src/App.tsx
+ M packages/ui/src/WelcomeScreen.tsx
+ M packages/ui/src/WindowsTopLeftLogo.tsx
+ M packages/ui/src/WorkspaceSidebarFooter.tsx
+ M packages/ui/src/app-shell/WorkspaceShellLayout.tsx
+ M packages/ui/src/components/mobile-ui/ZCodeAppLogo.tsx
+ M packages/ui/src/components/ui/ZCodeAboutLogo.tsx
+ M packages/ui/src/highspeed/HighspeedShareNoticeCard.tsx
+ M packages/ui/src/i18n/locales/en-US.ts
+ M packages/ui/src/i18n/locales/zh-CN.ts
+ M packages/ui/src/onboarding/OnboardingWelcomeView.tsx
+ M packages/ui/src/root/PostUpdateReleaseNotesDialog.tsx
+ M packages/ui/src/root/RootStartupLoading.tsx
+ M packages/ui/src/v4/ConversationDraftEmptyState.tsx
+ M packages/ui/src/v4/ConversationRowView.tsx
+ M packages/web/index.html
+ M packages/web/src/main.tsx
+ M packages/web/src/share/conversationSharePreviewClient.ts
+ M packages/web/src/web-remote-control/ui/webRemoteControlConnectionSheet.tsx
+ M packages/web/src/web-remote-control/ui/webRemoteControlDeviceListPage.tsx
+?? .git-status-porcelain.tmp
+?? apps/zcode-cli/docs/design/v2/chuansheng-assistant-identity.md
+?? apps/zcode-cli/docs/design/v2/workflow-ask-stall-observation.md
+?? apps/zcode-cli/docs/design/v2/workflow-bounded-recovery.md
+?? apps/zcode-cli/docs/design/v2/workflow-uncertain-recovery.md
+?? apps/zcode-cli/packages/bootstrap/src/app/workflow-progress-payload/
+?? apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/workflow-telemetry-facts/
+?? apps/zcode-cli/packages/bootstrap/src/zcode-protocol/workflow-host-observation-adapter.ts
+?? apps/zcode-cli/packages/bootstrap/src/zcode-protocol/workflow-host-observation/
+?? apps/zcode-cli/packages/bootstrap/tests/conversation-workflow-host-observation.test.ts
+?? apps/zcode-cli/packages/bootstrap/tests/fixtures/
+?? apps/zcode-cli/packages/bootstrap/tests/v4-workflow-uncertain-resubscribe.test.ts
+?? apps/zcode-cli/packages/bootstrap/tests/workflow-host-observation-adapter.test.ts
+?? apps/zcode-cli/packages/bootstrap/tests/workflow-host-observation/
+?? apps/zcode-cli/packages/bootstrap/tests/workflow-progress-payload/
+?? apps/zcode-cli/packages/bootstrap/tests/workflow-recovery-lifecycle.test.ts
+?? apps/zcode-cli/packages/bootstrap/tests/workflow-run-host-reconciliation.test.ts
+?? apps/zcode-cli/packages/bootstrap/tests/workflow-telemetry-facts/
+?? apps/zcode-cli/packages/bootstrap/tests/workflow-uncertain-crash.test.ts
+?? apps/zcode-cli/packages/contracts/.oxlintrc.json
+?? apps/zcode-cli/packages/core/tests/amend-workflow-recovery.test.ts
+?? apps/zcode-cli/packages/core/tests/workflow-run-host-observation.test.ts
+?? apps/zcode-cli/packages/dynamic-workflow/tests/engine/recovery-uncertainty.test.ts
+?? docs/prd/
+?? docs/specs/ccode-about-license.md
+?? docs/specs/ccode-audit-telemetry.md
+?? docs/specs/ccode-controller-local-skill.md
+?? docs/specs/ccode-distribution.md
+?? docs/specs/ccode-expert-skills-distribution.md
+?? docs/specs/ccode-provenance-ledger.md
+?? docs/specs/ccode-skill-sync-upload.md
+?? docs/specs/ccode-storage-isolation.md
+?? docs/specs/ccode-update-feed.md
+?? docs/specs/ccode-website.md
+?? docs/specs/chuansheng-brand.md
+?? docs/specs/managed-controller-skills.md
+?? docs/specs/workflow-ask-stall-observation.md
+?? docs/specs/workflow-bounded-recovery.md
+?? docs/specs/workflow-uncertain-recovery.md
+?? docs/superpowers/plans/2026-10-20-managed-controller-skills.md
+?? docs/superpowers/plans/2026-10-21-ccode-login-restore.md
+?? docs/superpowers/plans/2026-10-21-ccode-website.md
+?? docs/superpowers/plans/2026-10-21-confidential-controller.md
+?? docs/superpowers/plans/2026-10-21-controller-emergency-envelope.md
+?? docs/superpowers/plans/2026-10-21-controller-emergency-transport.md
+?? docs/superpowers/plans/2026-10-21-workflow-ask-stall-observation.md
+?? docs/superpowers/plans/2026-10-21-workflow-bounded-recovery.md
+?? docs/superpowers/plans/2026-10-21-workflow-uncertain-recovery.md
+?? docs/superpowers/plans/2026-10-22-ccode-provenance-ledger.md
+?? docs/zcode-development-workflow.md
+?? packages/desktop/build/chuansheng-icon.svg
+?? packages/desktop/test/build-metadata.test.mjs
+?? packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-workflow-recovery-uncertain.test.ts
+?? packages/desktop/test/e2e/conversation-session/manual-review/pending/workflow-recovery-renderer.test.mjs
+?? packages/desktop/test/e2e/conversation-session/queue-native-entry.ts
+?? packages/desktop/test/e2e/fixtures/cases/conversation-session/conversation-session-workflow-recovery-uncertain.json
+?? packages/desktop/test/e2e/fixtures/upstream/conversation-session/conversation-session-workflow-recovery-uncertain.json
+?? packages/desktop/test/e2e/helpers/workflow-recovery-history-fixture.ts
+?? packages/desktop/test/e2e/helpers/workflow-recovery-safe-capture.ts
+?? packages/desktop/test/workflowRecoveryHomeAdmission.test.ts
+?? packages/desktop/test/workflowRecoverySafeCapture.test.ts
+?? packages/shared/test/publishManagedSkill.test.ts
+?? packages/shared/test/zcodeProtocolV4WorkflowRunHostObservation.test.ts
+?? packages/ui/src/assets/chuansheng-logo.svg
+?? packages/ui/test/fixtures/workflow-recovery.fixture.tsx
+?? scripts/build-ccode-preview.mjs
+?? scripts/publish-managed-skill.mts
+?? sites/
+?? work/

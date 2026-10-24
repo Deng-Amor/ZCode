@@ -26,6 +26,8 @@
         "**/apps/zcode-cli/packages/bootstrap/src/zcode-protocol/session-mapper.ts",
         "**/apps/zcode-cli/packages/bootstrap/src/zcode-protocol/v4-bridge.ts",
         "**/apps/zcode-cli/packages/contracts/src/interfaces/session-store.port.ts",
+        // 模型公共契约为存量超限文件（原901/现902行）；WF4仅增加预算档，不为行数拆分契约。
+        "**/apps/zcode-cli/packages/contracts/src/model/index.ts",
         "**/apps/zcode-cli/packages/core/src/runtime/methods/steering.ts",
         "**/apps/zcode-cli/packages/core/src/runtime/methods/turn.ts",
         "**/apps/zcode-cli/packages/core/src/runtime/methods/turn-model-step.ts",

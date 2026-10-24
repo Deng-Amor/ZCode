@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  CoreErrorType,
+  SessionEventType,
   createSessionId,
   type MessagePart,
   type ModelInputMessage,
   type ModelRequest,
   type SessionStorePort,
+  type StreamingToolLedgerPayload,
   type ToolPart,
 } from "@zcode/contracts";
 import { MessageHistoryImpl } from "../src/agent/message-history.js";
@@ -12,6 +15,7 @@ import { hydrateMessageHistoryFromSession } from "../src/agent/session-history-h
 import { buildProviderRequestMessages } from "../src/runtime/helpers/provider-request-messages.js";
 import type { AgentRuntimeInternal } from "../src/runtime/internal.js";
 import { createToolRegistry } from "../src/tool/registry.js";
+import type { ToolExecutionContext } from "../src/tool/types.js";
 import { createTestAgentRuntime } from "./test-agent-runtime.js";
 import { createTestSessionEventStore } from "./test-event-store.js";
 import { createRecordingMessageStore } from "./runtime-output-token-continuation-test-helpers.js";
@@ -37,6 +41,7 @@ function createFixture(
     streamFailure?: boolean;
     earlyWriteFailure?: "pending" | "running" | false;
     delayEarlySchedule?: boolean;
+    pauseAfterStream?: boolean;
   } = {},
 ) {
   const sessionId = createSessionId("streaming-part-identity");
@@ -52,8 +57,31 @@ function createFixture(
   const scheduleStarted = Promise.withResolvers<void>();
   const releaseSchedule = Promise.withResolvers<void>();
   const lateExecutionSettled = Promise.withResolvers<void>();
+  const handlerStarted = Promise.withResolvers<void>();
+  const handlerAborted = Promise.withResolvers<void>();
+  const modelCompleteStarted = Promise.withResolvers<void>();
+  const releaseModelComplete = Promise.withResolvers<void>();
+  const eventStore = createTestSessionEventStore();
+  const appendEvent = eventStore.append.bind(eventStore);
+  if (options.pauseAfterStream) {
+    eventStore.append = async (event) => {
+      if (event.type === SessionEventType.ModelComplete) {
+        modelCompleteStarted.resolve();
+        await releaseModelComplete.promise;
+      }
+      return appendEvent(event);
+    };
+  }
   const registry = createToolRegistry();
-  const handler = vi.fn(async () => {
+  const handler = vi.fn(async (_input: unknown, context: ToolExecutionContext) => {
+    if (options.pauseAfterStream) {
+      handlerStarted.resolve();
+      await new Promise<void>((resolve) => {
+        context.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      handlerAborted.resolve();
+      context.abortSignal.throwIfAborted();
+    }
     if (options.outcome === "tool-error") throw new Error(READ_ERROR);
     return READ_OUTPUT;
   });
@@ -121,7 +149,7 @@ function createFixture(
       titleGeneration: { enabled: false },
     },
     {
-      eventStore: createTestSessionEventStore(),
+      eventStore,
       sessionStore: store as unknown as SessionStorePort,
       toolRegistry: registry,
       modelFactory: createTestModelFactory({
@@ -140,6 +168,7 @@ function createFixture(
             };
             if (options.delayEarlySchedule) await scheduleStarted.promise;
             else if (options.earlyWriteFailure !== false) await earlyFailure.promise;
+            if (options.pauseAfterStream) await handlerStarted.promise;
             if (options.streamFailure) throw new Error("Model request timed out.");
             yield { type: "finish", finishReason: "tool-calls", usage: {} };
             return;
@@ -185,6 +214,10 @@ function createFixture(
     hydrate,
     releaseSchedule,
     lateExecutionSettled,
+    handlerAborted,
+    modelCompleteStarted,
+    releaseModelComplete,
+    events: () => eventStore.getEvents(sessionId),
   };
 }
 
@@ -298,6 +331,48 @@ describe("streaming tool attempt history", () => {
     });
     expectSingleRead(fixture.requests[1]!.messages, true, "Side effects may be unknown");
     expectSingleRead(await fixture.hydrate(), true, "Side effects may be unknown");
+  });
+
+  it("closes the streaming tool ledger when cancelled after stream completion before drain", async () => {
+    const fixture = createFixture({ earlyWriteFailure: false, pauseAfterStream: true });
+    const controller = new AbortController();
+    const turn = fixture.runtime.executeTurn("read a file", undefined, {
+      abortSignal: controller.signal,
+    });
+    const cancelled = expect(turn).rejects.toMatchObject({ type: CoreErrorType.TurnCancelled });
+    try {
+      // 模型已返回且只读工具正在执行，事件落盘等待是生产可达的取消窗口。
+      await fixture.modelCompleteStarted.promise;
+      expect(fixture.parts().at(-1)?.state.status).toBe("running");
+      controller.abort();
+      await fixture.handlerAborted.promise;
+      fixture.releaseModelComplete.resolve();
+      await cancelled;
+      expect(fixture.handler).toHaveBeenCalledTimes(1);
+      expect(fixture.requests).toHaveLength(1);
+      const events = await fixture.events();
+      expect(
+        events.findLast((event) => event.type === SessionEventType.TurnComplete)?.payload,
+      ).toMatchObject({ resultType: "cancelled" });
+      expect(events.some((event) => event.type === SessionEventType.TurnError)).toBe(false);
+      const ledger = events.filter(
+        (event) => event.type === SessionEventType.StreamingToolLedgerUpdated,
+      );
+      expect(ledger.at(-1)?.payload).toMatchObject({
+        toolCallId: CALL_ID,
+        status: "tool_cancelled",
+      });
+      const terminalLedger = ledger.filter(
+        (event) => (event.payload as StreamingToolLedgerPayload).status === "tool_cancelled",
+      );
+      expect(terminalLedger).toHaveLength(1);
+      expect(events.indexOf(terminalLedger[0]!)).toBeLessThan(
+        events.findLastIndex((event) => event.type === SessionEventType.TurnComplete),
+      );
+    } finally {
+      controller.abort();
+      fixture.releaseModelComplete.resolve();
+    }
   });
 
   it("selects synthetic recovery even after a late update to the earlier part", async () => {

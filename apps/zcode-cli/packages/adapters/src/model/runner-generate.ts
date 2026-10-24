@@ -76,8 +76,8 @@ export async function runGenerateText(input: {
   statusSink?: ModelStatusSink;
   modelIoFullRetentionEnabled: boolean;
 }): Promise<ModelTextResult> {
-  // 重试预算档位：workflow actor 的请求带 unbounded，
-  // 只放宽瞬态失败的放弃条件；状态事件里的 maxAttempts 以 0 表示无上限。
+  // 重试预算档位：workflow actor 默认使用 workflow-finite，
+  // 沿用请求次数上限；仅显式 unbounded 在状态事件中以 maxAttempts=0 表示无上限。
   const retryBudget = input.request.modelRetryBudget;
   const statusMaxAttempts = (extraAttempts: number): number =>
     retryBudgetMaxAttempts(retryBudget, input.retry.maxAttempts + extraAttempts);
@@ -397,7 +397,7 @@ export async function runGenerateText(input: {
         offPeak?.kind === "queued"
           ? true
           : retryBudgetAllows(retryBudget, retryBudgetAttempt, input.retry.maxAttempts) &&
-            // workflow 流量（无上限预算）读策略表而不是分类器的 retryable；有界预算逐字不变。
+            // workflow-finite 与 unbounded 共用工作流策略表；次数上限由预算档位单独决定。
             retryAllowedByFailurePolicy(
               failure,
               retryBudget,

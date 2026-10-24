@@ -25,7 +25,8 @@ export async function resolveDefaultSkillRoots(
   const resolvedWorkingDirectory = resolve(workingDirectory);
   const roots: SkillRoot[] = [];
   const includeZcode = options.includeZcodeSkills ?? true;
-  const home = options.homeDirectory ?? homedir();
+  // 品牌桌面实例的用户技能随独立 home 隔离，避免原版同名技能覆盖内置总工。
+  const home = options.homeDirectory ?? (process.env.ZCODE_DESKTOP_HOME_DIR?.trim() || homedir());
   let priority = 0;
   const nextPriority = () => {
     priority += PRIORITY_STEP;

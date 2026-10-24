@@ -61,7 +61,8 @@ const CODEX_PLUGIN_MANIFEST_PATH = join(".codex-plugin", "plugin.json");
 /** 对齐 apps/zcode-cli/packages/adapters/src/skills/index.ts:19 */
 const MAX_DESCRIPTION_LENGTH = 1024;
 function resolveUserHomeDir() {
-  const envHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
+  // 设置页与 Agent 共用品牌 home，避免编辑原安装版的用户技能。
+  const envHome = process.env.ZCODE_DESKTOP_HOME_DIR?.trim() || process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
   return envHome && envHome.length > 0 ? envHome : homedir();
 }
 

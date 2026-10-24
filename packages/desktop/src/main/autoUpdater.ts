@@ -9,6 +9,7 @@ import {
   DEFAULT_ZCODE_ENDPOINT_ORIGIN,
   PlatformChannels,
   ZCODE_VERSION,
+  ZCODE_PRODUCT_FLAVOR,
   desktopMenuMessageIds,
   formatDesktopMenuMessage,
   getDesktopMenuMessage,
@@ -766,7 +767,10 @@ export function resolveUpdateFeedSourceFromStartupConfig(
 ): RuntimeUpdateFeedSource | undefined {
   const argv = options.argv ?? process.argv;
   const env = options.env ?? process.env;
-  const feedUrl = readSwitchValue(argv, UPDATE_FEED_URL_SWITCH) ?? env[UPDATE_FEED_URL_ENV]?.trim();
+  // CCode 安装身份固定更新渠道，不能回落到上游产品的更新服务。
+  const channel = ZCODE_PRODUCT_FLAVOR === "preview" ? "preview" : "stable";
+  const feedUrl = (readSwitchValue(argv, UPDATE_FEED_URL_SWITCH) ?? env[UPDATE_FEED_URL_ENV]?.trim())
+    || `https://ccode.sccsai.com/updates/${channel}/windows-x64/latest.yml`;
   return feedUrl
     ? {
         url: feedUrl,
@@ -775,19 +779,10 @@ export function resolveUpdateFeedSourceFromStartupConfig(
 }
 
 async function resolveUpdateReleaseChannel(
-  settingService: SettingServiceLike | undefined,
+  _settingService: SettingServiceLike | undefined,
 ): Promise<ElectronReleaseChannel> {
-  if (!settingService) {
-    return "stable";
-  }
-
-  try {
-    const settings = await settingService.get();
-    return settings.receivePreviewUpdates === true ? "preview" : "stable";
-  } catch (error) {
-    logger.warn("[auto-update] read preview update setting failed:", error);
-    return "stable";
-  }
+  // Preview 与正式版安装目录不同，不能由用户偏好切到另一种安装身份。
+  return ZCODE_PRODUCT_FLAVOR === "preview" ? "preview" : "stable";
 }
 
 async function syncAutoUpdateCheckChannelFromSettings(

@@ -1,0 +1,43 @@
+global:
+  # 临时时间戳（2026-09-10）：unmanaged-new-file 只约束此日期之后首次入库的文件。
+  # 基于领先 staging 很多的分支开工时，merge-base 之前的"新增"文件不应被追溯。
+  newFilesEnforcedSince: "2026-09-10"
+  acceptedUpstreamCommits: []
+  maxFileLines: 800
+  maxContractLines: 300
+  maxPublicMethods: 12
+  forbidCycles: true
+  forbidDeepImports: true
+  managedOnly: true
+  acceptedUpstreamSnapshot: scripts/architecture/upstream-snapshot.json
+
+exceptions:
+  - id: side-pane-full-view-shortcut-command-edit
+    rule: unmanaged-new-file
+    paths: [packages/shared/src/shortcutCommands.ts]
+    reason: 已准入的快捷键命令表只追加一条 toggleSidePaneFullView 命令（Side Pane 完整视图，docs/ui/side-pane-full-view.md）；命令表仍是唯一数据源，签名与模块边界不变，接管整个 shared 包不在本次范围内。
+====EX====
+exceptions:
+  - id: side-pane-full-view-shortcut-command-edit
+    rule: unmanaged-new-file
+    paths: [packages/shared/src/shortcutCommands.ts]
+    reason: 已准入的快捷键命令表只追加一条 toggleSidePaneFullView 命令（Side Pane 完整视图，docs/ui/side-pane-full-view.md）；命令表仍是唯一数据源，签名与模块边界不变，接管整个 shared 包不在本次范围内。
+  - id: opensource-cua-test-project-config
+    rule: unmanaged-new-file
+    paths: [packages/zcode-cua/vitest.config.ts]
+    reason: 该文件只装配测试项目，开源占位版本用于保持根单测入口可运行；不包含 producer 运行逻辑，不为同目录实现文件开放例外。
+  - id: opensource-tool-search-comment-cleanup
+    rule: unmanaged-new-file
+    paths:
+      - apps/zcode-cli/packages/contracts/src/tools/tool-search.ts
+      - apps/zcode-cli/packages/core/src/tool/handlers/tool-search.ts
+    reason: 已有上游文件仅去掉两行产品对标注释；去除注释后的 TypeScript 输出与 staging 完全一致。契约、实现和模块边界不变，整目录接管不在本次开源整理范围内；后续逻辑修改须重新核对模块治理。
+  - id: project-location-cache-recovery-existing-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/shared/src/project-access-token-client.ts
+      - packages/services/src/model-provider/accountProjectTokenClient.ts
+      - packages/services/src/credential/credentialService.ts
+    reason: 已有项目 Token 与凭据存储增加派生缓存的局部恢复端口；保持原有 owner 和共享文件锁，不接管全目录。
+  - id: test-ids-subpath-import-unmanaged-edit
+    rule: unmanaged-new-file

@@ -272,7 +272,18 @@ async function amendResolvedWorkflow(
     },
     { signal: context.abortSignal },
   );
-  if (!amended.ok) return amendRefusalFor(amended.reason, parsed.run_id);
+  if (!amended.ok) {
+    // 未知外部效果不能按普通修订拒绝处理：保留服务端身份，提示核实而非重跑。
+    if (amended.reason === "recovery_uncertain") {
+      const { runId, instance } = amended.uncertainty;
+      return {
+        result: false,
+        errorCode: AMEND_WORKFLOW_ERROR_CODE.RECOVERY_UNCERTAIN,
+        message: `workflow_run_recovery_uncertain: run ${runId}, instance ${instance.siteId}#${instance.ordinal}: the external outcome is unknown and requires verification. Amendment was refused to avoid repeating the effect; no replacement run was created.`,
+      };
+    }
+    return amendRefusalFor(amended.reason, parsed.run_id);
+  }
 
   const superseded =
     amended.supersededRunId === undefined

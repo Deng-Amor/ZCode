@@ -222,7 +222,20 @@ async function resumeWorkflowRun(
     workId: payload.workId,
     ...(payload.name === undefined ? {} : { name: payload.name }),
   });
-  if (!result.ok) throw new V4WorkflowRunResumeRejectedError(result.reason, result.message);
+  if (!result.ok) {
+    // 只把可信身份与未知事实交给既有 ACK.message，避免暴露输入或建议重放。
+    if (result.reason === "recovery_uncertain") {
+      const { runId, instance } = result.uncertainty;
+      throw new V4WorkflowRunResumeRejectedError(
+        result.reason,
+        `Run ${runId}, instance ${instance.siteId}#${instance.ordinal}: the external outcome is unknown and requires verification. Recovery was refused to avoid repeating the effect.`,
+      );
+    }
+    throw new V4WorkflowRunResumeRejectedError(
+      result.reason,
+      "message" in result ? result.message : undefined,
+    );
+  }
   return undefined;
 }
 

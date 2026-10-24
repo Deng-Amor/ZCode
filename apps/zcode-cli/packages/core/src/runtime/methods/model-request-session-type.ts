@@ -15,15 +15,15 @@ export function resolveModelRequestSessionTypeFromTaskType(
 }
 
 /**
- * workflow actor（含嵌套 workflow 的 actor）的模型请求拿**无上限**重试预算：模型错误绝不是
- * workflow 错误，由 runner 以最大努力恢复。
+ * workflow actor（含嵌套 workflow 的 actor）使用有限 workflow 预算：保留专用错误分类，
+ * 请求次数由 adapter 的既有 maxAttempts 约束，耗尽后交还 Core / Driver 结算。
  * 其余 session（主会话、subagent、fork…）沿用 adapter 的默认预算。
  */
 export function resolveModelRetryBudgetFromTaskType(
   taskType: SessionTaskType | undefined,
 ): ModelRetryBudget {
   if (taskType === "workflow_child" || taskType === "nested_workflow_child") {
-    return ModelRetryBudget.Unbounded;
+    return ModelRetryBudget.WorkflowFinite;
   }
   return ModelRetryBudget.Default;
 }

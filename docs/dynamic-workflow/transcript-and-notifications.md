@@ -6,6 +6,72 @@ and run pane), `authoring.md` (the artifact system), and
 `apps/zcode-cli/packages/dynamic-workflow/docs/execution-engine.md` (terminal states, the
 journal) own the things these surfaces display.
 
+## P2 host reconciliation observation: isolated stage A validation
+
+An owned inactive run with an unknown external outcome can be corrected by its lifecycle
+owner to `errored/RecoveryUncertain`. Stage A adds a parent-session **observation** after the
+durable row and terminal cache agree. This is not an engine completion, a journal `dwf_event`,
+a new task-notification kind or permission to repeat the effect. It reuses the existing
+DynamicWorkflowRunProgress/session append and publisher path, with `eventType: run-settled`,
+explicit `observationSource: host-reconciliation` and numeric `sequence: 0` (no journal cursor).
+Parent eventId/raw sequence still follow the normal event store; the run watermark stays put.
+
+The single shared pure parser is `parseWorkflowRunProgressObservation` in the existing
+`packages/shared/src/zcode-protocol-v4/workflow-runs.ts`, exported through
+`@zcode/shared/zcode-protocol-v4`. The exact narrow host shape is specified in
+`docs/specs/workflow-uncertain-recovery.md`. An absent own source key retains legacy handling;
+unknown or malformed present sources never fall back to ordinary progress. The producer,
+runtime, product projection and shared reducer use this same parser. Invalid host data is
+rejected before append, reminder, telemetry or state/watermark updates. Runtime logs a bounded
+reasonCode and safe session/run identity. The existing product `event-normalizer.ts` entry
+`normalizeConversationEvent` validates and throws safely before projection mutation, leaving
+the oversized product-projection file unchanged. The shared reducer still returns null for
+invalid input; its TUI consumers do not inherit throwing behavior.
+gateway retains the failed commit and propagates it to the existing runtime event-sink warning,
+or fails cold hydration/subscription. Generic apply errors do not guarantee `gateway.onError`.
+Telemetry remains a side channel that emits no fact for host or invalid observations; it must
+not be used to manufacture error-hook coverage.
+
+The terminal reducer clears old resumable/stopReason/supersededBy/error and applies this
+terminal's legal fields, retaining nodes, completed results, usage and lineage. Headers,
+Resume visibility and error text read the new run projection; sequence 0 does not re-fetch
+journal-backed workspace bodies because no node, artifact or journal entry changed. Any
+necessary terminal-dependent query refresh must use the terminal fact, not a fake cursor.
+The host observation has no launchInputId, produces no duplicate engine lifecycle telemetry,
+completion notification or model wake, and may close the existing terminal reminder state.
+
+Compatibility is scoped to supported old remote consumers receiving the new publisher's
+existing snapshots/deltas. Old reducers consuming raw progress may retain stale optional
+fields and are not claimed fixed. Test desktop continuous and web replayable shapes separately.
+
+For online GREEN acceptance, follow the server's `subscribeReserved` → accept `initialWires`
+→ `dispatch.commit()` order, then capture subsequent real `context.notify` notifications.
+An equivalent `subscribe` wrapper must demonstrate the same activation and separately accept
+the initial frames. The frozen RED already uses `gateway.subscribe`, which commits internally;
+its warm re-subscription snapshot evidence has no missing-commit defect. It does not prove
+physical transport or continuous online delivery. `flushNow` is a logical publisher probe,
+not notification-delivery evidence; this in-process test is not Desktop IPC/GUI or cross-Host QA.
+
+Stage A is implemented in the isolated worktree and its normal-dispatch checks pass;
+final review and original-repository integration are tracked separately. Runtime unavailable, append
+rejection and event-sink failure remain observable. The sink reuses the shared parser:
+legacy Engine errors retain their existing
+diagnostics; host/invalid synchronous or asynchronous failures record only stable reasonCode,
+safe identity and source classification, never arbitrary error.message/String(error). A resolved
+record promise is not proof of projection commit. Stage B is a mandatory open item for operation-bound internal eventId
+receipts and bounded recovery through existing commit/rebuild machinery, with no new outbox,
+periodic timer or permission-event bypass. Partial append retries must preserve/check event
+identity. User retries or restarts do not satisfy unattended recovery; A cannot close P2,
+the real GUI checks or failure-recovery acceptance.
+
+The existing serialization and telemetry files are registered as the app-layer managed modules
+`workflow-progress-payload` (owner agent-runtime) and `workflow-telemetry-facts` (owner conversation),
+both requiring shared and zcode-cli. Each declares only its existing function file, a small
+contract-artifact directory and its focused contract-test directory as roots. The existing
+function file and type contract remain public; the five contract artifacts add no runtime
+wrapper, state or behavior. Contract tests use the existing Vitest discovery. No architecture
+exception, baseline refresh or upstream-snapshot change is part of this registration.
+
 ## What a run leaves behind
 
 A workflow run lives in the background. Its owner, the main agent, learns about it through
@@ -980,3 +1046,36 @@ open state is local to the row and not persisted. The TUI shows the full text.
   has room for them.
 - Reports ride the payload unrendered. If the row ever shows them, the `count` versus
   `shown` tail ("N more in the run") is the contract to honour.
+
+
+## Per-ask model retry observations
+
+`node-stalled` is a pure engine observation for one live ask, with `instance`, `sinceMs`,
+and optional `reason`. The driver owns a separate 20-minute clock for every ask. An effective model retry or an already-scheduled driver transient redrive arms it; that ask's own model success resets it. A sibling's
+success still resets the existing run clock, but cannot hide this ask's retry segment.
+Settlement, acceptance, cancellation and disposal release the ask clock. Each live
+segment emits at most once; this is not a durable exactly-once delivery guarantee.
+
+The existing run-progress entry point turns this event into ordinary background text,
+with `backgroundSource: "workflow"`, run title, and runId as `workId`/`taskId`. It does
+**not** add `workflowNotification` or borrow `kind: "stall"`; old clients display the
+ordinary text. The formatter emits `<workflow-ask-stall>` containing runId, the complete
+received `siteId@ordinal`, elapsed milliseconds, and optional dominant reason, followed
+by minutes and an explicit statement that the run continues. It escapes XML and does
+not further truncate identity. The existing progress payload string limit still applies;
+this is not an arbitrary-length identity transport. A global `truncated` flag may refer
+only to reason and does not suppress an otherwise valid observation.
+
+This event neither changes node state nor clears a roster wait, counts as progress, or
+sets the run's `stalledSince`. It supplies investigation context, not authorization to
+cancel, rerun, or repeat side effects. The existing `run-stalled` text and structured
+`kind: "stall"` metadata retain their original meaning and delivery path.
+
+
+WF-3 also observes the existing driver transient redrive after Core exhausts its bounded
+stream recovery. The driver failure helper reports that scheduling fact through an
+internal host callback; the same ask clock records the reason. It does not fabricate a
+model network retry event, add another execution or change backoff. Core recovery events
+alone do not arm this clock, and the existing run clock keeps its original network-retry
+trigger contract. If the ask has already waited twenty minutes when driver redrive is
+scheduled, the existing clock can notify immediately.

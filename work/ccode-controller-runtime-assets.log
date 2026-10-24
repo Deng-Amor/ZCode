@@ -1,0 +1,203 @@
+
+> @zcode/desktop@ prepare:runtime-assets E:\ZCode\packages\desktop
+> node scripts/prepare-runtime-assets.mjs
+
+[ci][timer] prepare-runtime-assets:prepare:agent-bundle start
+../../apps/zcode-cli                     |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/desktop@ prepare:agent-bundle E:\ZCode\packages\desktop
+> node scripts/prepare-agent-node-bundle.mjs
+
+[prepare:agent-bundle] building zcode-cli app-server bundle ...
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/shared-types@0.1.0 build E:\ZCode\apps\zcode-cli\packages\shared-types
+> tsc
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/contracts@0.1.0 build E:\ZCode\apps\zcode-cli\packages\contracts
+> tsc
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/dynamic-workflow@0.1.0 build E:\ZCode\apps\zcode-cli\packages\dynamic-workflow
+> node scripts/generate-libs.mjs && tsc
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/dynamic-workflow-runtime@0.1.0 build E:\ZCode\apps\zcode-cli\packages\dynamic-workflow-runtime
+> tsc
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/core@0.1.0 build E:\ZCode\apps\zcode-cli\packages\core
+> tsc
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/adapters@0.1.0 build E:\ZCode\apps\zcode-cli\packages\adapters
+> tsc
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/i18n@0.1.0 build E:\ZCode\apps\zcode-cli\packages\i18n
+> tsc
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/telemetry@0.1.0 build E:\ZCode\apps\zcode-cli\packages\telemetry
+> tsc
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/bootstrap@0.1.0 build E:\ZCode\apps\zcode-cli\packages\bootstrap
+> tsc
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/android-emulator-plugin@0.1.0 build E:\ZCode\apps\zcode-cli\packages\android-emulator-plugin
+> tsc && node scripts/build-mcp.mjs
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/ios-simulator-plugin@0.1.0 build E:\ZCode\apps\zcode-cli\packages\ios-simulator-plugin
+> tsc && node scripts/build-mcp.mjs
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/node-repl-host@0.6.1 build E:\ZCode\apps\zcode-cli\packages\node-repl-host
+> tsc && node scripts/build.mjs
+
+[node-repl-host] E:\ZCode\apps\zcode-cli\packages\node-repl-host\dist\mcp\server.js
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/browser-use-plugin@0.5.1 build E:\ZCode\apps\zcode-cli\packages\browser-use-plugin
+> tsc && node scripts/build.mjs
+
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/documents-plugin@0.2.0 build E:\ZCode\apps\zcode-cli\packages\documents-plugin
+> node ../office-runtime/scripts/build.mjs
+
+Documents UI (docx): 0.99 MiB in 1 resources, loader 591 KiB
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/pdf-plugin@0.2.1 build E:\ZCode\apps\zcode-cli\packages\pdf-plugin
+> node ../office-runtime/scripts/build.mjs
+
+PDF UI (pdf): 1.20 MiB in 1 resources, loader 591 KiB
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/presentations-plugin@0.2.0 build E:\ZCode\apps\zcode-cli\packages\presentations-plugin
+> node ../office-runtime/scripts/build.mjs
+
+Presentations UI (pptx): 1.83 MiB in 1 resources, loader 591 KiB
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/spreadsheets-plugin@0.2.0 build E:\ZCode\apps\zcode-cli\packages\spreadsheets-plugin
+> node ../office-runtime/scripts/build.mjs
+
+Spreadsheets UI (xlsx): 2.99 MiB in 1 resources, loader 591 KiB
+(node:71596) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+apps/zcode-cli                           |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/cli@0.1.0 build:desktop-agent E:\ZCode\apps\zcode-cli\packages\cli
+> node scripts/build.mjs --desktop-agent
+
+
+  dist\zcode.cjs  14.5mb
+
+Done in 841ms
+[stage:agent-bundle] staged E:\ZCode\packages\desktop\bundled-agents\win32-x64\glm\zcode.cjs
+[prepare:agent-bundle] building @zcode/android-emulator-plugin runtime ...
+.                                        |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/android-emulator-plugin@0.1.0 build E:\ZCode\apps\zcode-cli\packages\android-emulator-plugin
+> tsc && node scripts/build-mcp.mjs
+
+[prepare:agent-bundle] building @zcode/documents-plugin runtime ...
+.                                        |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/documents-plugin@0.2.0 build E:\ZCode\apps\zcode-cli\packages\documents-plugin
+> node ../office-runtime/scripts/build.mjs
+
+Documents UI (docx): 0.99 MiB in 1 resources, loader 591 KiB
+[prepare:agent-bundle] building @zcode/pdf-plugin runtime ...
+.                                        |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/pdf-plugin@0.2.1 build E:\ZCode\apps\zcode-cli\packages\pdf-plugin
+> node ../office-runtime/scripts/build.mjs
+
+PDF UI (pdf): 1.20 MiB in 1 resources, loader 591 KiB
+[prepare:agent-bundle] building @zcode/presentations-plugin runtime ...
+.                                        |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/presentations-plugin@0.2.0 build E:\ZCode\apps\zcode-cli\packages\presentations-plugin
+> node ../office-runtime/scripts/build.mjs
+
+Presentations UI (pptx): 1.83 MiB in 1 resources, loader 591 KiB
+[prepare:agent-bundle] building @zcode/spreadsheets-plugin runtime ...
+.                                        |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/spreadsheets-plugin@0.2.0 build E:\ZCode\apps\zcode-cli\packages\spreadsheets-plugin
+> node ../office-runtime/scripts/build.mjs
+
+Spreadsheets UI (xlsx): 2.99 MiB in 1 resources, loader 591 KiB
+[prepare:agent-bundle] building @zcode/browser-use-plugin runtime ...
+.                                        |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/browser-use-plugin@0.5.1 build E:\ZCode\apps\zcode-cli\packages\browser-use-plugin
+> tsc && node scripts/build.mjs
+
+[prepare:agent-bundle] building @zcode/ios-simulator-plugin runtime ...
+.                                        |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/ios-simulator-plugin@0.1.0 build E:\ZCode\apps\zcode-cli\packages\ios-simulator-plugin
+> tsc && node scripts/build-mcp.mjs
+
+[prepare:agent-bundle] building @zcode/node-repl-host runtime ...
+.                                        |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/node-repl-host@0.6.1 build E:\ZCode\apps\zcode-cli\packages\node-repl-host
+> tsc && node scripts/build.mjs
+
+[node-repl-host] E:\ZCode\apps\zcode-cli\packages\node-repl-host\dist\mcp\server.js
+[stage:agent-bundle] staged E:\ZCode\packages\desktop\bundled-agents\win32-x64\glm\zcode.cjs
+[prepare:agent-bundle] staged official plugin packages/android-emulator-plugin
+[prepare:agent-bundle] staged official plugin packages/documents-plugin
+[prepare:agent-bundle] staged official plugin packages/image-search-plugin
+[prepare:agent-bundle] staged official plugin packages/pdf-plugin
+[prepare:agent-bundle] staged official plugin packages/presentations-plugin
+[prepare:agent-bundle] staged official plugin packages/spreadsheets-plugin
+[prepare:agent-bundle] staged official plugin packages/visualize-plugin
+[prepare:agent-bundle] staged official plugin packages/browser-use-plugin
+[prepare:agent-bundle] staged official plugin packages/ios-simulator-plugin
+[prepare:agent-bundle] staged official plugin packages/restore-legacy-sessions-plugin
+[prepare:agent-bundle] staged official plugin packages/skill-creator-plugin
+[prepare:agent-bundle] staged official plugin packages/plugin-creator-plugin
+[prepare:agent-bundle] staged official plugin packages/zcode-guide-plugin
+[prepare:agent-bundle] staged official plugin packages/node-repl-host
+[prepare:agent-bundle] staged official plugin packages/zcode-cua-plugin
+[prepare:agent-bundle] staged bundled skill pack packages/bundled-skills
+[prepare:agent-bundle] staged koffi into E:\ZCode\packages\desktop\bundled-agents\win32-x64\glm\packages\zcode-cua-plugin\node_modules (win32-x64)
+[prepare:agent-bundle] Computer Use package does not declare sharp, skip sharp staging
+(node:73528) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[ci][timer] prepare-runtime-assets:prepare:agent-bundle end duration_ms=56794
+[ci][timer] prepare-runtime-assets:prepare:native-search start
+../../apps/zcode-cli                     |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+
+> @zcode/desktop@ prepare:native-search E:\ZCode\packages\desktop
+> node ../../scripts/prepare-native-search-tools.mjs
+
+==> Preparing native search tools from repository archives
+    platform: win32-x64
+    target:   E:\ZCode\packages\desktop\bundled-tools\win32-x64
+    [skip] ugrep v7.8.4-1 已存在
+    [skip] ripgrep v14.1.1-1 已存在
+==> Done! native search tools (win32-x64) -> E:\ZCode\packages\desktop\bundled-tools\win32-x64
+[ci][timer] prepare-runtime-assets:prepare:native-search end duration_ms=369
+(node:68572) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)

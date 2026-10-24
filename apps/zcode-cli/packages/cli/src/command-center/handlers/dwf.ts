@@ -45,11 +45,19 @@ export async function handleDwfCommand(
     if (!runId) return respond(deps, DWF_USAGE);
     if (!app.resumeWorkflowRun) return unavailable(deps);
     const result = await app.resumeWorkflowRun({ workId: runId });
+    // 服务端返回的节点身份才可信；未知效果不能落入普通恢复建议。
+    if (!result.ok && result.reason === "recovery_uncertain") {
+      const { runId: uncertainRunId, instance } = result.uncertainty;
+      return respond(
+        deps,
+        `Cannot resume ${uncertainRunId}: instance ${instance.siteId}#${instance.ordinal}: the external outcome is unknown and requires verification. Recovery was refused to avoid repeating the effect. (recovery_uncertain)`,
+      );
+    }
     return respond(
       deps,
       result.ok
         ? `Resumed dynamic workflow run ${result.runId}.`
-        : `Cannot resume ${runId}: ${describeResumeRejection(result.reason)} (${result.reason})${result.message === undefined ? "" : `\n${result.message}`}`,
+        : `Cannot resume ${runId}: ${describeResumeRejection(result.reason)} (${result.reason})${!("message" in result) || result.message === undefined ? "" : `\n${result.message}`}`,
     );
   }
 

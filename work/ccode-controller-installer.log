@@ -1,0 +1,77 @@
+
+> @zcode/desktop@ bundle E:\ZCode\packages\desktop
+> node scripts/bundle.mjs "--os" "win" "--arch" "x64" "--skip-prepare" "--skip-build"
+
+[bundle] target=win/x64
+[bundle] skipPrepare=true skipBuild=true
+[ci][timer] bundle:electron-builder start
+[bundle] > pnpm exec electron-builder --config electron-builder.config.js --win --x64
+(node:33680) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+../../apps/zcode-cli                     |  WARN  Unsupported engine: wanted: {"node":"24.14.0"} (current: {"node":"v24.16.0","pnpm":"10.33.2"})
+  • electron-builder  version=26.8.1 os=10.0.22631
+  • loaded configuration  file=E:\ZCode\packages\desktop\electron-builder.config.js
+  • @electron/rebuild already used by electron-builder, please consider to remove excess dependency from devDependencies
+
+To ensure your native dependencies are always matched electron version, simply add script `"postinstall": "electron-builder install-app-deps" to your `package.json`
+[ci][timer] beforePack:restoreTargetNodePtyPrebuild start
+[beforePack] node-pty prebuild restore skipped for win32-x64
+[ci][timer] beforePack:restoreTargetNodePtyPrebuild end duration_ms=0
+[ci][timer] beforePack:patchNsisInstallSection start
+[ci][timer] beforePack:patchNsisInstallSection end duration_ms=1
+  • skipped dependencies rebuild  reason=npmRebuild is set to false
+  • packaging       platform=win32 arch=x64 electron=41.0.3 appOutDir=dist-ccode-controller-v1\win-unpacked
+  • packageManager not detected by file, falling back to environment detection  resolvedPackageManager=pnpm detected=E:\ZCode\packages\desktop
+  • searching for node modules  pm=pnpm searchDir=E:\ZCode\packages\desktop
+(node:73032) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+  • dependency not found on disk  dependencies=["@opentelemetry/api@1.9.0","@radix-ui/react-primitive@2.1.4","@radix-ui/react-slot@1.2.4","marked@17.0.6","pngjs@5.0.0","commander@14.0.3","zod@3.25.76","fs-extra@11.3.4","diff@8.0.3","@xyflow/system@0.0.76","@ai-sdk/provider@3.0.8","@ai-sdk/provider-utils@4.0.23","@ai-sdk/gateway@3.0.96","immer@10.2.0","tslib@2.3.0","yargs@15.4.1","diff@8.0.4","kleur@3.0.3","commander@11.1.0","which@4.0.0","execa@5.1.1","get-stream@6.0.1","human-signals@2.1.0","signal-exit@3.0.7","strip-final-newline@2.0.0","npm-run-path@4.0.1","open@11.0.0","zod@3.25.76","wrap-ansi@7.0.0","ora@8.2.0","ts-morph@26.0.0","semver@6.3.1","@shikijs/types@3.23.0","isexe@2.0.0","commander@2.20.3","react-is@16.13.1","@vercel/oidc@3.1.0","tslib@2.3.0","decamelize@1.2.0","y18n@4.0.3","yargs-parser@18.1.3","cliui@6.0.0","find-up@4.1.0","is-obj@3.0.0","human-signals@8.0.1","is-stream@4.0.1","strip-final-newline@4.0.0","get-stream@9.0.1","npm-run-path@6.0.0","data-uri-to-buffer@4.0.1","ast-types@0.16.1","semver@6.3.1","parse-json@5.2.0","wsl-utils@0.3.1","ajv@8.18.0","type-fest@5.5.0","strip-ansi@6.0.1","ansi-styles@4.3.0","chalk@5.6.2","log-symbols@6.0.0","emoji-regex@10.6.0","@ts-morph/common@0.27.0","semver@6.3.1","picomatch@2.3.2","@types/unist@2.0.11","camelcase@5.3.1","locate-path@5.0.0","mimic-fn@2.1.0","resolve-from@4.0.0","json-parse-even-better-errors@2.3.1","cookie@0.7.2","onetime@7.0.0","lru-cache@5.1.1","p-locate@4.1.0","path-to-regexp@8.4.2","iconv-lite@0.7.2","brace-expansion@5.0.5","yallist@3.1.1","escape-string-regexp@5.0.0","p-limit@2.3.0","balanced-match@4.0.4","p-try@2.2.0"]
+[bundle][heartbeat] electron-builder running elapsed_ms=30005 idle_ms=14383
+  • updating asar integrity executable resource  executablePath=dist-ccode-controller-v1\win-unpacked\CCode.exe
+  • signing with signtool.exe  path=dist-ccode-controller-v1\win-unpacked\resources\tools\ugrep\ugrep.exe
+  • signing with signtool.exe  path=dist-ccode-controller-v1\win-unpacked\resources\tools\ripgrep\rg.exe
+[ci][timer] afterPack:injectHoistedRuntimeModulesIntoAsar start
+[ci][timer] afterPack:scan-missing-runtime-modules start
+[ci][timer] afterPack:scan-missing-runtime-modules end duration_ms=331
+[afterPack] missing runtime modules count=24
+[ci][timer] afterPack:asar-extract start
+[bundle][heartbeat] electron-builder running elapsed_ms=60021 idle_ms=4616
+[ci][timer] afterPack:asar-extract end duration_ms=5001
+[ci][timer] afterPack:copy-runtime-modules start
+[ci][timer] afterPack:copy-runtime-modules end duration_ms=416
+[ci][timer] afterPack:asar-pack start
+[ci][timer] afterPack:asar-pack end duration_ms=16142
+[ci][timer] afterPack:injectHoistedRuntimeModulesIntoAsar end duration_ms=23696
+[ci][timer] afterPack:stripPackagedSourcemapReferences start
+[ci][timer] afterPack:sourcemap-cleanup:asar-extract start
+[ci][timer] afterPack:sourcemap-cleanup:asar-extract end duration_ms=4103
+[afterPack] stripped sourceMappingURL references=5460 files=5436 maps=369
+[ci][timer] afterPack:sourcemap-cleanup:asar-pack start
+[bundle][heartbeat] electron-builder running elapsed_ms=90022 idle_ms=4261
+[ci][timer] afterPack:sourcemap-cleanup:asar-pack end duration_ms=14722
+[afterPack] resources sourcemap cleanup references=0 files=0 maps=0
+[ci][timer] afterPack:stripPackagedSourcemapReferences end duration_ms=26101
+[ci][timer] afterPack:assertPackagedNativeResourcePolicy start
+[ci][timer] afterPack:assertPackagedNativeResourcePolicy end duration_ms=241
+[ci][timer] afterPack:assertPackagedNodePtyPrebuild start
+[ci][timer] afterPack:assertPackagedNodePtyPrebuild end duration_ms=0
+[ci][timer] afterPack:assertPackagedCuaSharp start
+[ci][timer] afterPack:assertPackagedCuaSharp end duration_ms=0
+[ci][timer] afterPack:assertPackagedCuaKoffi start
+[ci][timer] afterPack:assertPackagedCuaKoffi end duration_ms=0
+  ⨯ CUA plugin koffi runtime is incomplete in the packaged app:
+- missing staged koffi runtime for win32_x64: E:\ZCode\packages\desktop\dist-ccode-controller-v1\win-unpacked\resources\glm\packages\zcode-cua-plugin\node_modules\koffi\build\koffi\win32_x64\koffi.node  failedTask=build stackTrace=Error: CUA plugin koffi runtime is incomplete in the packaged app:
+- missing staged koffi runtime for win32_x64: E:\ZCode\packages\desktop\dist-ccode-controller-v1\win-unpacked\resources\glm\packages\zcode-cua-plugin\node_modules\koffi\build\koffi\win32_x64\koffi.node
+    at assertPackagedCuaKoffi (file:///E:/ZCode/packages/desktop/electron-builder.config.js:497:11)
+    at file:///E:/ZCode/packages/desktop/electron-builder.config.js:678:60
+    at runTimedSync (file:///E:/ZCode/packages/desktop/electron-builder.config.js:274:12)
+    at afterPack (file:///E:/ZCode/packages/desktop/electron-builder.config.js:678:5)
+    at emitInternal (E:\ZCode\node_modules\app-builder-lib\src\util\asyncEventEmitter.ts:61:9)
+    at AsyncEventEmitter.emit (E:\ZCode\node_modules\app-builder-lib\src\util\asyncEventEmitter.ts:68:26)
+    at Packager.emitAfterPack (E:\ZCode\node_modules\app-builder-lib\src\packager.ts:347:5)
+    at WinPackager.doPack (E:\ZCode\node_modules\app-builder-lib\src\platformPackager.ts:344:5)
+    at WinPackager.pack (E:\ZCode\node_modules\app-builder-lib\src\platformPackager.ts:161:5)
+    at Packager.doBuild (E:\ZCode\node_modules\app-builder-lib\src\packager.ts:538:11)
+[ci][timer] bundle:electron-builder end duration_ms=105163
+[bundle] pnpm exec electron-builder --config electron-builder.config.js --win --x64 failed with code 1
+ ELIFECYCLE  Command failed with exit code 1.

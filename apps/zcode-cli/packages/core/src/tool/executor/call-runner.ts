@@ -524,7 +524,6 @@ async function executeToolCallImpl(
           ...(deps.nativeSearchEnhancementsEnabled === false ? { findAndGrepEnabled: false } : {}),
         },
         skillPort: deps.skillPort,
-        activateConfidentialController: deps.activateConfidentialController,
         subagentPort: deps.subagentPort,
         coordinatorResponsePort: deps.coordinatorResponsePort,
         workflowSubmitPort: deps.workflowSubmitPort,

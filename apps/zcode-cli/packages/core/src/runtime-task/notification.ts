@@ -185,7 +185,8 @@ function formatLocalWorkflowTaskNotification(input: TaskNotificationInput): stri
   // 渐进产物排在 result / error **之后**：run 的收场是模型首先要读的，产物是补充材料。
   // 顺序也决定了 120k 总截断先斩谁——被斩掉的应该是这一节，而不是 run 的结果。
   if (input.reports !== undefined) {
-    const shown = input.reports.shown < input.reports.count ? ` shown="${input.reports.shown}"` : "";
+    const shown =
+      input.reports.shown < input.reports.count ? ` shown="${input.reports.shown}"` : "";
     lines.push(
       `<reports count="${input.reports.count}"${shown}>`,
       escapeXml(input.reports.preview),
@@ -275,7 +276,9 @@ function workflowDeliveryGuidance(input: {
       // 有文件时多一句「编辑它、传 `path`」：这一支的整个论证就是「你是为改脚本才停的」，
       // 而改脚本最便宜的做法是 Edit 那个文件，不是把整份脚本再贴一遍。
       `You stopped this workflow with TaskStop. If you stopped it to fix the script, do that now: call AmendWorkflow with this run's ID and the corrected script — everything that settled before the stop is imported as cache, and the sooner the fix runs the less it re-pays. (Next time, amend the running run directly: AmendWorkflow stops it for you.)${
-        scriptPath === undefined ? "" : ` Its script is at ${scriptPath}: edit that file and pass \`path\`.`
+        scriptPath === undefined
+          ? ""
+          : ` Its script is at ${scriptPath}: edit that file and pass \`path\`.`
       }`,
       "Otherwise present what it finished: the reported items above are finished findings — show them individually with their evidence. Resume it unchanged only if that is what the user wants.",
       ...artifactsShort,
@@ -414,4 +417,33 @@ function escapeLocalBashXml(value: string): string {
         return char;
     }
   });
+}
+
+/** ask 身份必须完整保留；此通知只观察模型重试，不宣称整个 run 停滞。 */
+export function formatWorkflowAskStallNotification(input: {
+  runLabel: string;
+  runId: string;
+  instance: { siteId: string; ordinal: number };
+  sinceMs: number;
+  reason?: string;
+}): string {
+  const millisecondsPerMinute = 60_000;
+  const minutes = Math.max(1, Math.round(input.sinceMs / millisecondsPerMinute));
+  const lines = [
+    "[SYSTEM NOTIFICATION - NOT USER INPUT]",
+    "<workflow-ask-stall>",
+    `  <run-id>${escapeXml(input.runId)}</run-id>`,
+    `  <run>${escapeXml(input.runLabel)}</run>`,
+    `  <ask>${escapeXml(input.instance.siteId)}@${input.instance.ordinal}</ask>`,
+    `  <since-ms>${input.sinceMs}</since-ms>`,
+  ];
+  if (input.reason !== undefined)
+    lines.push(`  <dominant-reason>${escapeXml(input.reason)}</dominant-reason>`);
+  lines.push(
+    "</workflow-ask-stall>",
+    `This ask has not completed a model request in ${minutes} minutes and has scheduled model retries.`,
+    "The run is still running. This observation applies only to the identified ask; other asks may be progressing.",
+    "Investigate with GetWorkflowRun using the run-id and full ask identity above. This is not a confirmed deadlock and does not authorize automatic cancellation or repeating side effects.",
+  );
+  return lines.join("\n");
 }

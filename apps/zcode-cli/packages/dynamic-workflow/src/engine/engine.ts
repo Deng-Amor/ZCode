@@ -53,6 +53,7 @@ import type {
   PersonaSpec,
   RunEvent,
   RunStallInfo,
+  AskStallInfo,
   RunStatus,
   RunStopReason,
   ValidateFn,
@@ -621,6 +622,11 @@ export class WorkflowEngine implements WorkflowHostApi, WorkflowReportSink {
   // 自适应并发的三个纯观察：引擎只 record，
   // 不据它们做任何决策。run 已结算或节点已结算后到达的调用被忽略——那是迟到的观察，
   // 落 journal 只会让一个已完结的 run 长出尾巴。
+  askStalled(instance: InstanceRef, info: AskStallInfo): void {
+    if (this.runSettled || !this.scheduler.isLive(instance)) return;
+    this.record({ type: "node-stalled", instance, ...info });
+  }
+
   askWaiting(instance: InstanceRef, info: AskWaitInfo): void {
     if (this.runSettled || !this.scheduler.isLive(instance)) return;
     this.record({ type: "node-waiting", instance, ...info });

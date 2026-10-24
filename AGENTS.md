@@ -7,11 +7,14 @@
 
 ## CCode 总控 Skill 来源
 
-- 核心总控 Skill 的唯一来源是数据中台知识库的「总控skills」文件夹；以中台审核发布的固定版本为准。
-- 禁止把核心明文正文打入安装包、放入本地技能目录或作为无授权离线回退。正常路径按 `docs/specs/ccode-startup-global-prompt.md`：登录后启动获取一次，作为标准全局系统提示词，不使用缓存服务、运行期授权续期或每请求租约。
+（2026-10-22 拍板修订：按「总控本地锁定 skill + 中台签名推送更新；专家 skill 中台按需下发；回流上传与审计遥测」三层架构表述，取代原「仅内存消费 + 启动全局提示词注入」口径；规格以 `docs/specs/ccode-controller-local-skill.md` 为准。2026-10-23 批次3b 客户端侧核心链路已按其迁移清单落地闭环——锁定存储/更新器、Main 所有权、skill-port 命中加载、按需通道、旧全局注入链退役；真实运行验收与中台侧联调未完成，不得宣称整体交付。）
+
+- 核心总控 Skill 的唯一来源是数据中台知识库的「总控skills」文件夹；以中台审核发布的固定版本为准。中台侧需求见 `docs/prd/ccode-dataplatform-prd.md`。
+- 总控通用派发部分为本地内置锁定 skill：首次成功登录后从中台获取并经 Ed25519 验签落地为本地加密锁定副本（加密定位为防君子门槛，不是保密措施）；更新走中台签名推送，验签后原子落地、可回滚；用户不可改锁定原件，只可开分支迭代；触发为 stub 常驻 + 完整 skill 命中加载，不采用启动全局提示词整段注入。详见 `docs/specs/ccode-controller-local-skill.md`（取代 `docs/specs/ccode-startup-global-prompt.md`）。
+- 领域专家 skill 唯一存于数据中台、按需下发：命中领域才加载、未命中零请求；下发内容经验签后本地缓存，用户只读不可改。详见 `docs/specs/ccode-expert-skills-distribution.md`。
+- skill 回流上传与审计遥测分别见 `docs/specs/ccode-skill-sync-upload.md`、`docs/specs/ccode-audit-telemetry.md`。
 - 用户已授权独立备用服务方案：仅允许按 `docs/specs/ccode-emergency-authorization.md` 保存中台签名的加密备用包及必要非敏感元数据；明文正文和长期明文解密密钥不落盘。第一阶段仅已有授权且绑定版本的运行续跑，明确拒绝/撤销/验签失败不得转备用；设计或代码存在不代表备用服务已启用或真实验收。
-- 总控在客户端认证后统一装配，普通聊天、工作任务、恢复及子任务继承同一启动配置，不再由 Skill 激活。正文不进入会话存储或日志。
-- 来源、私有通道、输出保护和恢复规则详见 `docs/specs/ccode-confidential-controller.md`；未完成真实运行验收不得宣称整体交付。
+- 总控锁定正文不进入普通日志、遥测、会话存储、导出、分享与压缩摘要；输出保护、恢复规则与旧路线取代关系详见 `docs/specs/ccode-confidential-controller.md`（2026-10-22 起为部分取代状态，取代关系与保留清单见其文末）。未完成真实运行验收不得宣称整体交付。
 
 ## 命令与仓库结构
 
@@ -91,3 +94,14 @@ affected 使用 Vitest 官方选择，只运行选中的根 UT；选中整个套
 - `info` 用于进程和会话生命周期、权限结果、一次性初始化等生产可用事件。
 - `warn` 用于可恢复异常；`error` 用于崩溃、握手失败、鉴权丢失等不可恢复错误。
 - 不在日志、示例或提交中写入凭据、真实用户数据和内部服务地址。
+
+## CCode Windows Preview 发布与热更新
+
+- CCode Preview Windows x64 的更新清单地址为：`https://ccode.sccsai.com/updates/preview/windows-x64/latest.yml`。
+- 发布链路不在本仓库内完成：安装包先上传到阿里云 OSS 私有桶 `cs-platform-service` 的 `ccode/releases/<版本>/` 前缀；随后更新独立网站仓库 `E:\\ccode-website` 的 `deploy/release.json`，由该仓库的 `master` 分支 CI 部署到 `https://ccode.sccsai.com`。
+- 网站仓库的标准发布命令为：`npm run prepare:release -- --remote`，然后 `npm run build`；确认生成结果后提交并执行 `git push origin master`，等待 GitHub Actions 成功。
+- 上传包时必须使用新的版本目录和严格命名的包文件，例如 `ccode/releases/0.0.8/CCode-0.0.8-win-x64.exe`；安装包上传成功后才更新 `release.json`，禁止原地覆盖历史版本。OSS 对象应保留私有 ACL、原始文件名的 `Content-Disposition`、`x-oss-meta-sha256` 和禁止覆盖设置。
+- 旧的可复用上传入口是本机仓库外脚本 `C:\\Users\\Administrator\\.codex\\ccode-oss-upload-v005.py`。该脚本会从 `E:\\github\\cs-platform-service\\.env.dev` 读取数据库连接信息，再从 `infra_file_config` 的 `id=25` 读取 OSS 配置；后续发布应复制为对应版本脚本或改为参数化脚本，不要把其中的凭据、数据库密码、AccessKey 或 AccessSecret 写入 Git、AGENTS.md、日志或提交。
+- 上传后必须核验：OSS 对象大小与本地安装包一致、`x-oss-meta-sha256` 一致、对象 ACL 为 `private/default`；再回读 `https://ccode.sccsai.com/updates/preview/windows-x64/latest.yml`，确认版本、文件大小和 SHA-512；同时对下载 URL 执行 HEAD 检查。
+- 已安装 `0.0.7` 的客户端不会因远端重新发布同版本而热更新，热更新必须提升产品版本到 `0.0.8` 或更高，并同步生成安装包、`.blockmap` 和 `latest.yml`。
+- 发布状态以远端 `latest.yml` 和下载包的实际回读结果为准；没有上传成功和线上回读证据时，不得宣称已发布。

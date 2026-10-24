@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-workflow-recovery-uncertain",
+  "spec": "./test/e2e/conversation-session/conversation-session-workflow-recovery-uncertain.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-workflow-recovery-uncertain.json"
+  ],
+  "fileFixtures": [],
+  "providerRequestPolicy": "none",
+  "noProviderRequests": true,
+  "requests": [],
+  "historyKind": "synthetic-history",
+  "limitations": "History was never executed or authorized. Fixed node inputHash only supports rejection preflight, not successful replay compatibility. This does not prove a real crash, CTRL execution, raw ACK or raw snapshot capture."
+}

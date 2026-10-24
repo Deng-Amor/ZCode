@@ -71,7 +71,7 @@ function getSidebarProfileName(user?: UserInfo | null): string {
     return username;
   }
 
-  return "ZCode";
+  return "川升";
 }
 
 function getSidebarProfileBadge(

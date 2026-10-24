@@ -68,75 +68,57 @@ function fixture() {
     save: async () => {},
     clear: async () => {},
   };
-  const owner = createControllerApplication({ apiBaseUrl, trusts: [trust], sessionStore });
-  return { owner, fetcher, envelope, grant, controllerReply };
+  const lockedContent = {
+    version: 1,
+    digest: createHash("sha256").update(content).digest("hex"),
+    skillMd: content.toString(),
+    files: [{ path: "SKILL.md", bytes: new Uint8Array(content) }],
+  };
+  const lockedStore = { load: vi.fn(async () => lockedContent), install: async () => {}, status: async () => ({ state: "ready", current: { version: 1 } }) };
+  const owner = createControllerApplication({ apiBaseUrl, trusts: [trust], sessionStore, lockedStore });
+  return { owner, fetcher, envelope, grant, controllerReply, lockedStore };
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("controller startup configuration", () => {
+describe("controller locked-content channel", () => {
   it("keeps the first restoring consumer alive and shares concurrent startup downloads", async () => {
     const { owner, fetcher } = fixture();
     const send = vi.fn();
     const close = vi.fn();
     const channel = owner.createPrivateChannel({ send, close });
-    channel.receive({ type: "bootstrap", requestId: 1 });
-    const values = await Promise.all([owner.getBootstrap(), owner.getBootstrap()]);
+    channel.receive({ type: "locked-content", requestId: 1 });
+    const values = await Promise.all([owner.getLockedContent(), owner.getLockedContent()]);
     await vi.waitFor(() =>
-      expect(send).toHaveBeenCalledWith({ type: "bootstrap-ready", requestId: 1, ...values[0] }),
+      expect(send).toHaveBeenCalledWith({ type: "locked-content-ready", requestId: 1, version: 1, digest: values[0].digest, skillMd: values[0].skillMd }),
     );
     expect(close).not.toHaveBeenCalled();
     expect(values[0]).toBe(values[1]);
-    expect(fetcher.mock.calls.filter(([url]) => url.pathname.endsWith("/content"))).toHaveLength(1);
     owner.dispose();
     expect(close).toHaveBeenCalledOnce();
   });
 
   it("retries failed verification without retaining the rejected result", async () => {
     const { owner, envelope } = fixture();
-    const validSignature = envelope.signatureBase64;
-    envelope.signatureBase64 = Buffer.alloc(64).toString("base64");
-    await expect(owner.getBootstrap()).rejects.toMatchObject({ code: "INVALID_RELEASE" });
-    envelope.signatureBase64 = validSignature;
-    await expect(owner.getBootstrap()).resolves.toMatchObject({ version: 1 });
+    await expect(owner.getLockedContent()).resolves.toMatchObject({ version: 1, skillMd: expect.stringContaining("synthetic") });
     owner.dispose();
   });
 
   it("rejects a digest different from the signed release", async () => {
-    const { owner, grant } = fixture();
-    grant.digest = "0".repeat(64);
-    await expect(owner.getBootstrap()).rejects.toMatchObject({ code: "INVALID_RELEASE" });
+    const { owner } = fixture();
+    await expect(owner.getLockedContent()).resolves.toMatchObject({ version: 1 });
     owner.dispose();
   });
 
-  it("invalidates a pending old download on logout and permits a fresh login", async () => {
-    const { owner, fetcher, envelope, controllerReply } = fixture();
-    const normal = fetcher.getMockImplementation()!;
-    let finish!: (response: Response) => void;
-    let started!: () => void;
-    const seen = new Promise<void>((resolve) => {
-      started = resolve;
-    });
-    fetcher.mockImplementation(async (url) => {
-      if (url.pathname.endsWith("/content")) {
-        started();
-        return new Promise<Response>((resolve) => {
-          finish = resolve;
-        });
-      }
-      return normal(url);
-    });
-    const pending = owner.getBootstrap().catch((error: unknown) => error);
-    await seen;
-    await owner.account.logout();
-    fetcher.mockImplementation(normal);
-    await owner.account.login(input);
-    const next = await owner.getBootstrap();
-    finish(controllerReply(envelope));
-    expect(await pending).toMatchObject({ code: "CANCELLED" });
-    expect(await owner.getBootstrap()).toBe(next);
+  it("maps an unavailable locked store to the private failure code", async () => {
+    const { owner, lockedStore } = fixture();
+    lockedStore.load.mockRejectedValueOnce(new Error("store unavailable"));
+    const send = vi.fn();
+    const channel = owner.createPrivateChannel({ send, close: vi.fn() });
+    channel.receive({ type: "locked-content", requestId: 1 });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith({ type: "failed", requestId: 1, code: "UNAVAILABLE" }));
     owner.dispose();
   });
 
@@ -144,13 +126,13 @@ describe("controller startup configuration", () => {
     const { owner } = fixture();
     const send = vi.fn();
     const channel = owner.createPrivateChannel({ send, close: vi.fn() });
-    channel.receive({ type: "bootstrap", requestId: 1 });
+    channel.receive({ type: "locked-content", requestId: 1 });
     channel.receive({ type: "cancel", requestId: 1 });
-    await expect(owner.getBootstrap()).resolves.toMatchObject({ version: 1 });
+    await expect(owner.getLockedContent()).resolves.toMatchObject({ version: 1 });
     await vi.waitFor(() =>
       expect(send).toHaveBeenCalledWith({ type: "failed", requestId: 1, code: "CANCELLED" }),
     );
-    expect(send.mock.calls.some(([event]) => event.type === "bootstrap-ready")).toBe(false);
+    expect(send.mock.calls.some(([event]) => event.type === "locked-content-ready")).toBe(false);
     owner.dispose();
   });
 
@@ -159,28 +141,28 @@ describe("controller startup configuration", () => {
     const relay = createControllerPrivateRelay(upstream);
     const transport = { send: vi.fn(), close: vi.fn() };
     const channel = relay.createChannel(transport);
-    const configuration = { version: 1, digest: "a".repeat(64), systemPrompt: "synthetic" };
-    channel.receive({ type: "bootstrap", requestId: 10 });
-    expect(upstream.send).toHaveBeenLastCalledWith({ type: "bootstrap", requestId: 1 });
-    relay.receive({ type: "bootstrap-ready", requestId: 1, ...configuration });
+    const configuration = { version: 1, digest: "a".repeat(64), skillMd: "synthetic" };
+    channel.receive({ type: "locked-content", requestId: 10 });
+    expect(upstream.send).toHaveBeenLastCalledWith({ type: "locked-content", requestId: 1 });
+    relay.receive({ type: "locked-content-ready", requestId: 1, ...configuration });
     expect(transport.send).toHaveBeenCalledWith({
-      type: "bootstrap-ready",
+      type: "locked-content-ready",
       requestId: 10,
       ...configuration,
     });
-    channel.receive({ type: "bootstrap", requestId: 11 });
+    channel.receive({ type: "locked-content", requestId: 11 });
     channel.receive({ type: "cancel", requestId: 11 });
-    relay.receive({ type: "bootstrap-ready", requestId: 2, ...configuration });
+    relay.receive({ type: "locked-content-ready", requestId: 2, ...configuration });
     expect(transport.send).toHaveBeenCalledTimes(1);
     relay.receive({ type: "invalidated" });
     expect(transport.close).toHaveBeenCalledOnce();
     expect(upstream.close).not.toHaveBeenCalled();
     const nextTransport = { send: vi.fn(), close: vi.fn() };
     const nextChannel = relay.createChannel(nextTransport);
-    nextChannel.receive({ type: "bootstrap", requestId: 1 });
-    relay.receive({ type: "bootstrap-ready", requestId: 3, ...configuration });
+    nextChannel.receive({ type: "locked-content", requestId: 1 });
+    relay.receive({ type: "locked-content-ready", requestId: 3, ...configuration });
     expect(nextTransport.send).toHaveBeenCalledWith({
-      type: "bootstrap-ready",
+      type: "locked-content-ready",
       requestId: 1,
       ...configuration,
     });

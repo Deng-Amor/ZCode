@@ -604,6 +604,11 @@ export interface AgentRuntime {
   recordDynamicWorkflowRunProgress(
     input: DynamicWorkflowRunProgressPayload & { traceContext?: TraceContext },
   ): Promise<void>;
+  /** 宿主观察：真实存储确认后同步交接，Promise 仅跟踪原追加尾部。 */
+  recordWorkflowHostObservation(
+    input: DynamicWorkflowRunProgressPayload,
+    onStored: (storedEvent: SessionEvent) => void,
+  ): Promise<void>;
   /** 恢复的 dwf run 的追踪重臂（registry 登记 + started 事件 + waiter + 结算通知）。 */
   /**
    * onDemand 会话注册十个工作流工具（docs/dynamic-workflow/launch.md「On demand: activation」）。

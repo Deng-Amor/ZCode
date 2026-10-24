@@ -1,4 +1,4 @@
-import { rm } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
@@ -99,6 +99,43 @@ export async function runDesktopProductionBuild({ cwd = resolveDesktopBuildCwd()
 
     await runCommandAsync(step);
   }
+  await writeCCodePackagedEntry(cwd);
+}
+
+export async function writeCCodePackagedEntry(cwd = resolveDesktopBuildCwd()) {
+  // ESM 分包的静态依赖先于入口执行，必须通过动态 import 隔开应用路径初始化与业务模块。
+  await writeFile(
+    resolve(cwd, "out/ccode-main.mjs"),
+    `import { app } from "electron";
+import { join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
+const brand = app.getName().includes("Preview") ? "CCode Preview" : "CCode";
+process.env.ZCODE_DESKTOP_HOME_DIR = join(app.getPath("appData"), brand, "data");
+process.env.ZCODE_DATA_BASE_DIR = process.env.ZCODE_DESKTOP_HOME_DIR;
+try {
+  const settings = JSON.parse(await readFile(join(process.env.ZCODE_DESKTOP_HOME_DIR, ".zcode", "v2", "setting.json"), "utf8"));
+  if (typeof settings?.dataBaseDir === "string" && settings.dataBaseDir.trim()
+      && resolve(settings.dataBaseDir.trim()) !== resolve(homedir())) {
+    process.env.ZCODE_DATA_BASE_DIR = settings.dataBaseDir.trim();
+  }
+} catch { /* Missing or invalid settings use the isolated default. */ }
+const storageRoot = join(process.env.ZCODE_DATA_BASE_DIR, ".zcode");
+process.env.ZCODE_HOME = storageRoot;
+process.env.ZCODE_STORAGE_DIR = storageRoot;
+process.env.ZCODE_SESSION_DB_PATH = join(storageRoot, "cli", "db", "db.sqlite");
+delete process.env.ZCODE_SESSION_DB;
+if (existsSync(join(storageRoot, "v2", "tasks-index.sqlite"))) {
+  process.env.CCODE_LEGACY_SESSION_DB = join(homedir(), ".zcode", "cli", "db", "db.sqlite");
+} else {
+  delete process.env.CCODE_LEGACY_SESSION_DB;
+}
+await import("./main/index.js");
+`,
+    "utf8",
+  );
 }
 
 const isEntrypoint = process.argv[1] === fileURLToPath(import.meta.url);

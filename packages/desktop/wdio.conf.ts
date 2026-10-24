@@ -1,3 +1,17 @@
+import {
+  createWorkflowRecoverySafeCapture,
+  createWorkflowRecoveryProof,
+  createWorkflowRecoverySafeError,
+  resolveWorkflowRecoverySafeCapture,
+} from "./test/e2e/helpers/workflow-recovery-safe-capture.js";
+import { randomUUID } from "node:crypto";
+import {
+  admitWorkflowRecoveryHome,
+  completeWorkflowRecoveryReset,
+  matchesWorkflowRecoverySpec,
+  prepareWorkflowRecoveryReset,
+  seedWorkflowRecoveryHistory,
+} from "./test/e2e/helpers/workflow-recovery-history-fixture.js";
 import { createConversationShareMockRoute } from "./test/e2e/helpers/conversation-share-mock-route.js";
 import {
   loadToolSearchResponses,
@@ -21,12 +35,12 @@ import {
 } from "./test/e2e/fixtures/entitlement-presentation.js";
 /* eslint-disable max-lines -- WDIO 配置需要集中维护 Electron、Xvfb、代理和容器 demo 参数，拆开会让测试入口更难追踪。 */
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, globSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { matchesGlob, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   captureWorkspaceSources,
@@ -550,6 +564,46 @@ const pluginNoGitGitHubArchiveE2E = configuredE2ESpecs.some((spec) =>
 const workspacePluginRemoteExplicitSyncE2E = configuredE2ESpecs.some((spec) =>
   spec.includes("conversation-session-plugin-remote-explicit-sync-workspace.test.ts"),
 );
+const configuredE2EExcludes = [
+  ...(upstreamProviderSpecRequested ? [] : [UPSTREAM_PROVIDER_SPEC]),
+  ...(turnSteerProbeSpecRequested ? [] : [TURN_STEER_PROBE_SPEC]),
+  ...(manualReviewE2E ? [] : [MANUAL_REVIEW_SPEC_GLOB]),
+  ...resolveEnvironmentGatedFormalSpecExcludes({
+    env: process.env,
+    targeted: requestedE2ESpecs.length > 0,
+  }),
+  ...requestedE2EExcludeSpecs,
+];
+// 修复依据：必须在 reporter 初始化前核实际选择；展开 glob 同时沿用默认排除规则。
+const wf4ResolvedSpecs = configuredE2ESpecs
+  .flatMap((spec) =>
+    /[*?[\]{}]/.test(spec)
+      ? globSync(spec, { cwd: DESKTOP_DIR, exclude: configuredE2EExcludes })
+      : [spec],
+  )
+  .filter(
+    (spec) =>
+      !configuredE2EExcludes.some((excluded) =>
+        matchesGlob(
+          resolve(DESKTOP_DIR, spec.startsWith("file:") ? fileURLToPath(spec) : spec),
+          resolve(DESKTOP_DIR, excluded),
+        ),
+      ),
+  );
+const wf4SafeCaptureEnabled = resolveWf4Capture(wf4ResolvedSpecs) === "enabled";
+const wf4SafeCapture = wf4SafeCaptureEnabled ? createWorkflowRecoverySafeCapture() : undefined;
+
+function resolveWf4Capture(specs: string[]) {
+  return resolveWorkflowRecoverySafeCapture({
+    specs,
+    desktopDir: DESKTOP_DIR,
+    optIn: process.env.ZCODE_E2E_WF4_SAFE_CAPTURE,
+    mode: upstreamE2EHttpMode,
+    toolsearchProxy: specs.some((spec) => spec.includes("conversation-session-toolsearch")),
+    codingPlanProxy: shouldPrepareCodingPlanTeamMock(specs),
+  });
+}
+
 const e2eReporter = createE2EReporter({
   repoRoot: REPO_ROOT,
   desktopDir: DESKTOP_DIR,
@@ -564,6 +618,19 @@ const E2E_RUN_ID = process.env.ZCODE_E2E_RUN_ID?.trim();
 if (!E2E_RUN_ID) {
   throw new Error("[e2e] ZCODE_E2E_RUN_ID missing after reporter initialization");
 }
+const wf4OwnerId = wf4SafeCaptureEnabled
+  ? process.env.WDIO_WORKER_ID === undefined
+    ? randomUUID()
+    : (process.env.ZCODE_E2E_WF4_OWNER_ID ?? "")
+  : "";
+const wf4Proof = wf4SafeCaptureEnabled
+  ? createWorkflowRecoveryProof({
+      artifactDir: e2eReporter.artifactDir,
+      runId: E2E_RUN_ID,
+      ownerId: wf4OwnerId,
+    })
+  : undefined;
+let wf4WorkerStarted = false;
 const E2E_RUN_CACHE_DIR = resolve(DESKTOP_DIR, ".e2e-cache", E2E_RUN_ID);
 const E2E_APP_OUTPUT_DIR = resolve(E2E_RUN_CACHE_DIR, "app");
 const E2E_APP_ENTRY_POINT = resolve(E2E_APP_OUTPUT_DIR, "main/index.js");
@@ -640,7 +707,27 @@ async function measureE2ELifecyclePhase<T>(
   context: { cid?: string; specs?: string[] },
   run: () => Promise<T> | T,
 ): Promise<T> {
-  return await runMeasuredE2ELifecyclePhase(phase, context, e2eReporter.recordLifecycleEvent, run);
+  try {
+    return await runMeasuredE2ELifecyclePhase(
+      phase,
+      context,
+      e2eReporter.recordLifecycleEvent,
+      async () => {
+        try {
+          return await run();
+        } catch (error) {
+          if (!wf4SafeCaptureEnabled) throw error;
+          wf4SafeCapture?.markFailed();
+          throw createWorkflowRecoverySafeError();
+        }
+      },
+    );
+  } catch (error) {
+    if (!wf4SafeCaptureEnabled) throw error;
+    // 修复原因：finally 中 recorder 的异常原先绕过 owner，后续恢复写入也不能清除失败。
+    wf4SafeCapture?.markFailed();
+    throw createWorkflowRecoverySafeError();
+  }
 }
 
 async function runE2EDiagnosticWithTimeout<T>(
@@ -1123,6 +1210,8 @@ function ensureUpstreamReplayConfig() {
 }
 
 async function startUpstreamE2EHttp(specs: string[] = []) {
+  if ((resolveWf4Capture(specs) === "enabled") !== wf4SafeCaptureEnabled)
+    throw createWorkflowRecoverySafeError();
   await stopUpstreamE2EHttp();
   if (
     upstreamE2EHttpMode === "capture" ||
@@ -1135,6 +1224,12 @@ async function startUpstreamE2EHttp(specs: string[] = []) {
 
   ensureUpstreamReplayConfig();
   upstreamReplayServer = await startUpstreamReplayServer({
+    ...(wf4SafeCapture
+      ? {
+          artifactWriter: wf4SafeCapture.artifactWriter,
+          diagnostics: { mode: "metadata-only" as const, onFailure: wf4SafeCapture.markFailed },
+        }
+      : {}),
     artifactPath: UPSTREAM_CAPTURE_ARTIFACT_PATH,
     fixtureVariables: createE2EReplayFixtureVariables(E2E_HOME_DIR),
     fixturePaths: resolveUpstreamReplayFixturePaths(specs),
@@ -3121,6 +3216,7 @@ function writeE2ECleanupWarning(message: string) {
 }
 
 function formatErrorMessage(error: unknown) {
+  if (wf4SafeCaptureEnabled) return "WF4_SAFE_CAPTURE_FAILED";
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -3185,6 +3281,8 @@ function forceFinalizeE2ERunnerFromGuard() {
 }
 
 async function resetE2EHome(specs: string[] = []) {
+  const recoveryFixture = matchesWorkflowRecoverySpec(specs, DESKTOP_DIR);
+  if (recoveryFixture) await prepareWorkflowRecoveryReset(E2E_HOME_DIR, REPO_ROOT);
   await removeE2EHomeWithRetry();
   mkdirSync(E2E_HOME_DIR, { recursive: true });
   seedE2EStartupState(specs);
@@ -3230,6 +3328,17 @@ async function resetE2EHome(specs: string[] = []) {
       cliEntryPoint: ZCODE_CLI_ENTRYPOINT,
       e2eHomeDir: E2E_HOME_DIR,
       workspacePath: resolve(E2E_HOME_DIR, "ZCodeProject"),
+    });
+  }
+  if (recoveryFixture) {
+    await completeWorkflowRecoveryReset(E2E_HOME_DIR, REPO_ROOT);
+    await seedWorkflowRecoveryHistory({
+      e2eHomeDir: E2E_HOME_DIR,
+      repoRoot: REPO_ROOT,
+      desktopDir: DESKTOP_DIR,
+      cliEntryPoint: ZCODE_CLI_ENTRYPOINT,
+      providerId: e2eProviderPreset.providerId,
+      modelId: e2eProviderPreset.model,
     });
   }
   seedE2EWorkerModelStreamConfig(specs);
@@ -4609,6 +4718,12 @@ export const config: WebdriverIO.Config = {
     ? 300_000
     : E2E_WEBDRIVER_REQUEST_LIMITS.timeoutMs,
   runnerEnv: {
+    ...(wf4SafeCaptureEnabled
+      ? {
+          ZCODE_E2E_WF4_SAFE_CAPTURE: "1",
+          ZCODE_E2E_WF4_OWNER_ID: wf4OwnerId,
+        }
+      : {}),
     E2E_PROVIDER_ALTERNATE_MODEL: E2E_PROVIDER_SECONDARY_MODEL,
     E2E_PROVIDER_ALTERNATE_PROVIDER_ID,
     E2E_PROVIDER_ALTERNATE_PROVIDER_NAME,
@@ -4725,18 +4840,7 @@ export const config: WebdriverIO.Config = {
   specs: configuredE2ESpecs,
   // 修复原因：上游 provider e2e 需要真实上游 key，默认全量 e2e 不应启动一个“跳过但仍占用浏览器”的 worker。
   // 否则它会和 smoke 共用并重置 .e2e-home，表现为临时测试窗口白屏或一直等不到默认工作区。
-  exclude: [
-    ...(upstreamProviderSpecRequested ? [] : [UPSTREAM_PROVIDER_SPEC]),
-    ...(turnSteerProbeSpecRequested ? [] : [TURN_STEER_PROBE_SPEC]),
-    ...(manualReviewE2E ? [] : [MANUAL_REVIEW_SPEC_GLOB]),
-    ...resolveEnvironmentGatedFormalSpecExcludes({
-      env: process.env,
-      targeted: requestedE2ESpecs.length > 0,
-    }),
-    // Bugfix: MR 自动门禁可以临时 quarantine 已知不稳定正式 spec，但本地默认
-    // `test:e2e` 不受影响，避免把 flaky case 从开发者回归入口永久隐藏。
-    ...requestedE2EExcludeSpecs,
-  ],
+  exclude: configuredE2EExcludes,
   mochaOpts: {
     // Bug 根因：WDIO config beforeSuite 通过 executeHooksWithArgs 执行，普通异常会被
     // 记录后 resolve，坏 session 仍会进入产品 case。Mocha 原生 root hook 才会把
@@ -4803,6 +4907,11 @@ export const config: WebdriverIO.Config = {
   },
   async onPrepare() {
     try {
+      if (wf4SafeCaptureEnabled) await wf4Proof!.initialize();
+      // 修复原因：平台工具可能创建 HOME/AppData；必须在任何准备动作前认领新 HOME。
+      if (matchesWorkflowRecoverySpec(configuredE2ESpecs, DESKTOP_DIR)) {
+        await admitWorkflowRecoveryHome(E2E_HOME_DIR, REPO_ROOT);
+      }
       e2eReporter.prepare(configuredE2ESpecs);
       await measureE2ELifecyclePhase("prepare", { specs: configuredE2ESpecs }, async () => {
         await cleanupE2EElectronProcesses("onPrepare");
@@ -4868,11 +4977,21 @@ export const config: WebdriverIO.Config = {
     } catch (error) {
       // 修复原因：WDIO 会把 onPrepare 异常记录成 hook error 后继续派发 worker，
       // 构建失败时会演变成几十个 DevToolsActivePort/bridge timeout 噪音，掩盖真正原因。
-      console.error("[e2e] fatal onPrepare failure", error);
+      console.error(
+        "[e2e] fatal onPrepare failure",
+        wf4SafeCaptureEnabled ? createWorkflowRecoverySafeError() : error,
+      );
       process.exit(1);
     }
   },
   onWorkerStart(cid, _caps, specs) {
+    if (wf4SafeCaptureEnabled) {
+      if (wf4WorkerStarted) {
+        wf4SafeCapture?.markFailed();
+        throw createWorkflowRecoverySafeError();
+      }
+      wf4WorkerStarted = true;
+    }
     e2eRunnerFinalizationGuard.disarm();
     e2eWorkerLifecycleStarts.set(cid, {
       specs,
@@ -4880,6 +4999,9 @@ export const config: WebdriverIO.Config = {
     });
   },
   async beforeSession(_config, capabilities, specs, cid) {
+    if (wf4SafeCaptureEnabled) await wf4Proof!.claim();
+    if ((resolveWf4Capture(specs) === "enabled") !== wf4SafeCaptureEnabled)
+      throw createWorkflowRecoverySafeError();
     // Bugfix: 现有 e2e 会读写 ~/.zcode/v2；如果多个 spec 复用真实 HOME，
     // 上一个 spec 的凭据、最近项目和 localStorage 会串到下一个 spec，
     // 既污染开发者本机数据，也让“首次启动”类断言变得随机。
@@ -4888,6 +5010,7 @@ export const config: WebdriverIO.Config = {
     // worker 再清除自定义 Agent 覆盖，确保数据库准备仍走 bundled resolver。
     currentE2EWorkerSessionSpecs = specs;
     applyUpstreamE2EHttpModeForWorker(specs);
+    resolveWf4Capture(specs);
     applyAskUserQuestionClockScaleForWorker(specs);
     applyE2EProviderEnv(specs);
     configureHighspeedE2EMock(specs);
@@ -5003,8 +5126,9 @@ export const config: WebdriverIO.Config = {
     } catch (error) {
       // Bug 根因：WDIO executeHooksWithArgs 会吞掉 beforeSession rejection；保存原始
       // 失败并交给 Mocha root hook 抛出，确保产品 test body 不在残缺环境里继续跑。
-      currentE2EBeforeSessionError =
-        error ?? new Error("beforeSession setup rejected without an error value");
+      currentE2EBeforeSessionError = wf4SafeCaptureEnabled
+        ? createWorkflowRecoverySafeError()
+        : (error ?? new Error("beforeSession setup rejected without an error value"));
     }
   },
   async before(_capabilities, specs) {
@@ -5014,6 +5138,15 @@ export const config: WebdriverIO.Config = {
     currentE2EWorkerSpecs = specs;
   },
   async beforeTest(test) {
+    if (wf4SafeCaptureEnabled) {
+      wf4SafeCapture?.assertHealthy();
+      e2eFailureArtifacts ??= new E2EFailureArtifactCollector({
+        artifactDir: e2eReporter.artifactDir,
+        browser,
+        enabled: false,
+      });
+      return;
+    }
     // 修复原因：当前 Electron runner 的 before hook 阶段 `browser.electron`
     // 还没注入；等到 beforeTest 再启动采样，才能持续调用 electron.execute。
     await e2eReporter.startUICoverage(browser);
@@ -5030,6 +5163,7 @@ export const config: WebdriverIO.Config = {
     }
   },
   async beforeCommand(commandName) {
+    if (wf4SafeCaptureEnabled) return;
     if (commandName !== "refresh") {
       return;
     }
@@ -5044,8 +5178,10 @@ export const config: WebdriverIO.Config = {
   async after(_result, _capabilities, specs) {
     await measureE2ELifecyclePhase("after", { specs }, async () => {
       try {
-        await e2eReporter.stopProcessSampling(browser, specs);
-        await e2eReporter.stopUICoverage();
+        if (!wf4SafeCaptureEnabled) {
+          await e2eReporter.stopProcessSampling(browser, specs);
+          await e2eReporter.stopUICoverage();
+        }
       } finally {
         // 先让 ChromeDriver 正常关闭 renderer；同进程的 closed 监听再触发
         // app.quit，afterSession 最后验证整个进程树已经退出。
@@ -5055,41 +5191,79 @@ export const config: WebdriverIO.Config = {
     });
   },
   async afterSession() {
-    await measureE2ELifecyclePhase(
-      "after-session",
-      { specs: currentE2EWorkerSessionSpecs },
-      async () => {
-        try {
-          await cleanupE2EElectronProcesses("afterSession", {
-            requireExit: true,
-            waitForGracefulExit: true,
-          });
-          if (currentE2EChromiumUserDataDir) {
-            await cleanupE2EDirectory("afterSession", currentE2EChromiumUserDataDir, true);
+    let wf4ShutdownFailed = false;
+    // worker 才拥有 replay 实例；必须在本进程退出前 drain 并检查，不依赖 launcher 新实例。
+    if (wf4SafeCaptureEnabled) {
+      try {
+        await stopUpstreamE2EHttp();
+        wf4SafeCapture?.assertHealthy();
+      } catch {
+        wf4SafeCapture?.markFailed();
+        process.exitCode = 1;
+        wf4ShutdownFailed = true;
+      }
+    }
+    try {
+      await measureE2ELifecyclePhase(
+        "after-session",
+        { specs: currentE2EWorkerSessionSpecs },
+        async () => {
+          try {
+            await cleanupE2EElectronProcesses("afterSession", {
+              requireExit: true,
+              waitForGracefulExit: true,
+            });
+            if (currentE2EChromiumUserDataDir) {
+              await cleanupE2EDirectory("afterSession", currentE2EChromiumUserDataDir, true);
+            }
+            // Electron/Host/CLI 都已退出，V8 JSON 此时完整封口；趁下一 worker 启动前
+            // 就地归一化，避免全量 manual-review 把重复 source map 累积到磁盘上限。
+            if (!wf4SafeCaptureEnabled) e2eReporter.compactNodeCoverage();
+          } finally {
+            await stopRequestSecurityFixture();
+            await stopModelContextBudgetConfigE2EMock();
+            await stopDynamicWorkflowConfigE2EMock();
+            currentE2EElectronAppPid = null;
+            await stopOAuthCompletionRaceFixture?.();
+            stopOAuthCompletionRaceFixture = null;
+            await stopWebRemoteControlAuthGateFixture?.();
+            stopWebRemoteControlAuthGateFixture = null;
+            await stopAccessToken401Fixture?.();
+            stopAccessToken401Fixture = null;
+            currentE2EBeforeSessionError = null;
+            e2eFailureArtifacts = null;
+            currentE2EWorkerSessionSpecs = [];
+            currentE2EChromiumUserDataDir = null;
           }
-          // Electron/Host/CLI 都已退出，V8 JSON 此时完整封口；趁下一 worker 启动前
-          // 就地归一化，避免全量 manual-review 把重复 source map 累积到磁盘上限。
-          e2eReporter.compactNodeCoverage();
-        } finally {
-          await stopRequestSecurityFixture();
-          await stopModelContextBudgetConfigE2EMock();
-          await stopDynamicWorkflowConfigE2EMock();
-          currentE2EElectronAppPid = null;
-          await stopOAuthCompletionRaceFixture?.();
-          stopOAuthCompletionRaceFixture = null;
-          await stopWebRemoteControlAuthGateFixture?.();
-          stopWebRemoteControlAuthGateFixture = null;
-          await stopAccessToken401Fixture?.();
-          stopAccessToken401Fixture = null;
-          currentE2EBeforeSessionError = null;
-          e2eFailureArtifacts = null;
-          currentE2EWorkerSessionSpecs = [];
-          currentE2EChromiumUserDataDir = null;
+        },
+      );
+    } catch (error) {
+      if (wf4SafeCaptureEnabled) {
+        process.exitCode = 1;
+        wf4ShutdownFailed = true;
+        wf4SafeCapture?.markFailed();
+      } else {
+        throw error;
+      }
+    }
+    if (wf4SafeCaptureEnabled) {
+      try {
+        try {
+          wf4SafeCapture?.assertHealthy();
+        } catch {
+          wf4ShutdownFailed = true;
         }
-      },
-    );
+        // afterSession rejection 会被框架吞掉；launcher 必须读取本 run 的原子终态证明。
+        await wf4Proof!.finish(!wf4ShutdownFailed);
+      } catch {
+        process.exitCode = 1;
+        wf4ShutdownFailed = true;
+      }
+    }
+    if (wf4ShutdownFailed) throw createWorkflowRecoverySafeError();
   },
   onWorkerEnd(cid, exitCode, specs) {
+    if (wf4SafeCaptureEnabled && exitCode !== 0) wf4SafeCapture?.markFailed();
     e2eRunnerFinalizationGuard.arm();
     const workerLifecycle = e2eWorkerLifecycleStarts.get(cid);
     if (!workerLifecycle) {
@@ -5109,6 +5283,25 @@ export const config: WebdriverIO.Config = {
     });
   },
   async afterTest(test, _context, result) {
+    if (wf4SafeCaptureEnabled) {
+      try {
+        wf4SafeCapture?.assertHealthy();
+        e2eReporter.recordTestResult(
+          { title: "WF4", file: wf4ResolvedSpecs[0] },
+          {
+            passed: result.passed,
+            duration: result.duration,
+            status: result.passed ? "passed" : "failed",
+            error: result.passed ? undefined : createWorkflowRecoverySafeError(),
+          },
+        );
+      } catch {
+        wf4SafeCapture?.markFailed();
+        process.exitCode = 1;
+        throw createWorkflowRecoverySafeError();
+      }
+      return;
+    }
     let failureArtifacts;
     const collectionErrors: string[] = [];
     try {
@@ -5180,8 +5373,21 @@ export const config: WebdriverIO.Config = {
         }
       });
     } catch (error) {
-      onCompleteError = error;
+      if (wf4SafeCaptureEnabled) wf4SafeCapture?.markFailed();
+      onCompleteError = wf4SafeCaptureEnabled ? createWorkflowRecoverySafeError() : error;
     } finally {
+      if (wf4SafeCaptureEnabled) {
+        try {
+          wf4SafeCapture?.assertHealthy();
+          await wf4Proof!.assertHealthy();
+        } catch {
+          onCompleteError = createWorkflowRecoverySafeError();
+        }
+        if (onCompleteError) {
+          exitCode = exitCode || 1;
+          process.exitCode = exitCode;
+        }
+      }
       e2eReporter.writeSummary(exitCode);
       armE2ERunnerExitWatchdog(exitCode);
     }

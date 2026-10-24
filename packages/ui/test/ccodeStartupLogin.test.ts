@@ -1,13 +1,19 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, expect, it, vi } from "vitest";
-const accountState = vi.hoisted(() => ({ authenticated: false, available: true }));
+const accountState = vi.hoisted(() => ({ authenticated: false, available: true, unavailable: false }));
+const platformState = vi.hoisted(() => ({ closeWindow: vi.fn() }));
 vi.mock("@/hooks/useCcodeAccount.js", () => ({
   useCcodeAccount: () => ({
     account: accountState.available ? {} : undefined,
     state: { authenticated: accountState.authenticated },
-    unavailable: false,
+    unavailable: accountState.unavailable,
     refresh() {},
+  }),
+}));
+vi.mock("@/hooks/usePlatform.js", () => ({
+  usePlatform: () => ({
+    executeDesktopCommand: platformState.closeWindow,
   }),
 }));
 vi.mock("@/i18n/IntlProvider.js", () => ({
@@ -22,6 +28,8 @@ import { CcodeStartupLogin } from "@/ccode-account/CcodeStartupLogin.js";
 beforeEach(() => {
   accountState.authenticated = false;
   accountState.available = true;
+  accountState.unavailable = false;
+  platformState.closeWindow.mockClear();
 });
 const render = () =>
   renderToStaticMarkup(createElement(CcodeStartupLogin, { children: "WORKSPACE" }));
@@ -38,4 +46,9 @@ it("opens the workspace after authenticated bootstrap", () => {
 it("preserves Web without an account port", () => {
   accountState.available = false;
   expect(render()).toBe("WORKSPACE");
+});
+
+it("provides an exit action when account status is unavailable", () => {
+  accountState.unavailable = true;
+  expect(render()).toContain("ccode.account.cancel");
 });

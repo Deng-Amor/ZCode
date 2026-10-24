@@ -1,6 +1,7 @@
 /* eslint-disable max-lines -- 桌面窗口 chrome、webview 安全策略和 popup 路由共享同一 BrowserWindow 生命周期上下文。 */
 import { app, BrowserWindow, Menu, nativeImage, nativeTheme, screen, shell } from "electron";
 import { join } from "node:path";
+import { resolveWindowsAppUserModelIdForFlavor } from "../../scripts/desktop-product-identity.mjs";
 import type {
   ContextMenuParams,
   Input,
@@ -11,6 +12,7 @@ import type {
 import type { DesktopTitleBarTheme, Locale } from "@zcode/shared";
 import {
   DEFAULT_LOCALE,
+  ZCODE_PRODUCT_FLAVOR,
   desktopMenuMessageIds,
   getDesktopMenuMessage,
   isTrustedCodingPlanWebviewOrigin,
@@ -612,6 +614,19 @@ export function createBrowserWindow(options: {
       additionalArguments: [`--device-id=${options.deviceMid ?? ""}`],
     },
   });
+
+  if (process.platform === "win32") {
+    // 窗口 PNG 只覆盖窗口图标；任务栏仍可能取 electron.exe 的默认资源，需要显式绑定 ICO。
+    win.setAppDetails({
+      appId: resolveWindowsAppUserModelIdForFlavor(ZCODE_PRODUCT_FLAVOR, {
+        isPackaged: app.isPackaged,
+      }),
+      appIconPath: app.isPackaged
+        ? join(process.resourcesPath, "tray_icon.ico")
+        : join(import.meta.dirname, "../../build/icon.ico"),
+      appIconIndex: 0,
+    });
+  }
 
   // 缩放命令原本只改当前运行窗口，没有在重启后恢复。
   // 创建窗口时由 main 进程先应用 setting.json 中的桌面缩放档位，同时覆盖 Chromium 可能残留的 per-host zoom。

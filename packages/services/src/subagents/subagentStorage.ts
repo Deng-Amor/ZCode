@@ -12,7 +12,8 @@ export function resolveUserHomeDir(options?: SubagentStorageOptions): string {
   if (options?.homeDir && options.homeDir.trim().length > 0) {
     return options.homeDir;
   }
-  const envHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
+  // 子智能体管理入口与品牌桌面配置隔离，不改变外部 CLI 的真实 HOME。
+  const envHome = process.env.ZCODE_DESKTOP_HOME_DIR?.trim() || process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
   return envHome && envHome.length > 0 ? envHome : homedir();
 }
 

@@ -20,6 +20,7 @@ import { createNodeSessionMailboxAdapter } from "@zcode/adapters/mailbox";
 import { createNodeContextSourceAdapter } from "@zcode/adapters/context";
 import { createNodeSkillAdapter } from "@zcode/adapters/skills";
 import { createControllerSkillPort } from "@zcode/adapters/confidential-controller";
+import { createExpertSkillPort } from "@zcode/adapters/expert-skills";
 import { createMcpAdapter } from "@zcode/adapters/mcp";
 import {
   AgentRuntime,
@@ -404,7 +405,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       (messageEnabled
         ? createNodeSessionMailboxAdapter({
             rootDir: resolvePath(
-              (options.env ?? process.env).ZCODE_MAILBOX_ROOT ?? "~/.zcode/mailbox",
+              (options.env ?? process.env).ZCODE_MAILBOX_ROOT ?? join(storageRoot, "mailbox"),
             ),
           })
         : undefined);
@@ -643,6 +644,12 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     // CreateWorkflow 因此回到占位诊断路径。这是一个记了日志的可见降级，而不是一条
     // 会静默丢掉持久化的运行路径（详见 dynamic-workflow-run-service.ts 的文件头）。
     const dynamicWorkflowJournal = resolveDynamicWorkflowJournalStore(sessionStore, logger);
+    const dynamicWorkflowRunProgressSink = createDynamicWorkflowRunProgressSink({
+      getRuntime,
+      logger,
+      sessionId,
+      onWorkflowHostObservationStored: options.onWorkflowHostObservationStored,
+    });
     const dynamicWorkflowRunPort =
       dynamicWorkflowJournal === undefined
         ? undefined
@@ -770,12 +777,9 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
             //
             // 身份闸门、runtime 未就绪与 append 失败三条降级路径都在这个汇里（连同它们的单测），
             // 见 dynamic-workflow-run-progress-sink.ts 的文件头。
-            onRunEvent: createDynamicWorkflowRunProgressSink({
-              // 惰性：run service 在 runtime 构造之前就建好了（它是 AgentRuntime 的依赖之一）。
-              getRuntime,
-              logger,
-              sessionId,
-            }),
+            onRunEvent: dynamicWorkflowRunProgressSink,
+            // 宿主修正与 Engine 事件共用惰性父 runtime 汇，来源保持独立。
+            onRunReconciled: dynamicWorkflowRunProgressSink,
             // 孤儿收敛的作用域：本 app 的会话。构造时把**这个会话**留在 journal 里的非终态
             // run（死进程的遗物）收敛成 failed；兄弟会话的在飞 run 因此绝不会被误伤。
             parentSessionId: sessionId,
@@ -833,10 +837,17 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
             ],
           }))
         : undefined;
-    const skillPort =
+    const controllerOrOrdinarySkillPort =
       options.createConfidentialControllerScope || options.confidentialController
-        ? createControllerSkillPort(ordinarySkillPort)
+        ? createControllerSkillPort(ordinarySkillPort, options.confidentialControllerLockedContent ? { load: options.confidentialControllerLockedContent.load } : undefined)
         : ordinarySkillPort;
+    // controller 先过滤保留名，expert 再包在外层；两者 identity 集合不相交，顺序无歧义。
+    const skillPort = options.expertSkills
+      ? createExpertSkillPort(
+          { catalog: options.expertSkills.catalog, content: options.expertSkills.content },
+          controllerOrOrdinarySkillPort,
+        )
+      : controllerOrOrdinarySkillPort;
     runtime = new AgentRuntime(sessionId, runtimeConfig, {
       ...(options.readSubagentRuntimeConfig
         ? {

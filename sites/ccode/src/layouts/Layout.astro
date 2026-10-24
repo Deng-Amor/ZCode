@@ -1,0 +1,29 @@
+---
+import '../styles/global.css';
+---
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Ccode，让想法成为可交付的作品。了解 AI 编程工作台、任务协作与自定义模型，下载 Windows 桌面版。" />
+    <meta name="theme-color" content="#faf9f6" />
+    <meta property="og:title" content="Ccode — 把想法，变成可交付的作品" />
+    <meta property="og:description" content="一个工作台，从想法到交付。探索 Ccode 并下载 Windows 桌面版。" />
+    <meta property="og:type" content="website" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Ccode — 把想法，变成可交付的作品</title>
+    <script is:inline>
+      // 设备识别独立于屏幕宽度，避免电脑窄窗口被误判为手机版。
+      const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      document.documentElement.dataset.device = isMobileDevice ? 'mobile' : 'desktop';
+      try { if (localStorage.getItem('ccode-theme') === 'dark') document.documentElement.dataset.theme = 'dark'; } catch {}
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <slot />
+    <script src="../scripts/site.ts"></script>
+  </body>
+</html>

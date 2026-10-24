@@ -175,6 +175,34 @@ describe("retryAllowedByFailurePolicy", () => {
     ).toBe(false);
     expect(retryAllowedByFailurePolicy(busy, ModelRetryBudget.Unbounded, "1308")).toBe(false);
   });
+  it("有限 workflow 预算保留策略表，普通及 single-attempt 仍读分类器", () => {
+    expect(retryAllowedByFailurePolicy(busy, ModelRetryBudget.WorkflowFinite, "3008")).toBe(true);
+    expect(retryAllowedByFailurePolicy(busy, ModelRetryBudget.SingleAttempt, "3008")).toBe(false);
+    for (const budget of [ModelRetryBudget.WorkflowFinite, ModelRetryBudget.Unbounded]) {
+      expect(retryAllowedByFailurePolicy(busy, budget, "1308")).toBe(false);
+      expect(
+        retryAllowedByFailurePolicy(
+          failure({ reason: ModelFailureReason.AuthFailed }),
+          budget,
+          "1006",
+        ),
+      ).toBe(false);
+      expect(
+        retryAllowedByFailurePolicy(
+          failure({ reason: ModelFailureReason.ContextExceeded }),
+          budget,
+          "1261",
+        ),
+      ).toBe(false);
+      expect(
+        retryAllowedByFailurePolicy(
+          failure({ reason: ModelFailureReason.Cancelled }),
+          budget,
+          undefined,
+        ),
+      ).toBe(false);
+    }
+  });
 });
 
 describe("inspectWorkflowModelFailure", () => {

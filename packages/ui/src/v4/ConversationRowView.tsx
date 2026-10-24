@@ -1650,6 +1650,22 @@ export const ConversationAssistantTextActions = memo(function ConversationAssist
   );
 });
 
+const ASSISTANT_VENDOR_AI_PATTERN = /(?:智谱|zhipu)\s*ai/giu;
+const ASSISTANT_VENDOR_NAME_PATTERN = /智谱|zhipu/giu;
+const ASSISTANT_PRODUCT_NAME_PATTERN = /zcode/giu;
+const ASSISTANT_VENDOR_PENDING_SUFFIX =
+  /(?:智|智谱\s*a?|z(?:h(?:i(?:p(?:u(?:\s*a?)?)?)?)?|c(?:o(?:d)?)?)?)$/iu;
+
+function projectAssistantBrandText(text: string, streaming = false): string {
+  // 增量可能把品牌名切开；先暂缓累计正文末尾的未完成匹配，避免旧名称闪现。
+  // 只派生客户端显示与复制内容，持久化原文和发送给模型的上下文保持不变。
+  const displayText = streaming ? text.replace(ASSISTANT_VENDOR_PENDING_SUFFIX, "") : text;
+  return displayText
+    .replace(ASSISTANT_VENDOR_AI_PATTERN, "川升AI")
+    .replace(ASSISTANT_VENDOR_NAME_PATTERN, "川升")
+    .replace(ASSISTANT_PRODUCT_NAME_PATTERN, "CCode");
+}
+
 const AssistantTextRowView = memo(function AssistantTextRowView({
   row,
   context,
@@ -1683,9 +1699,12 @@ const AssistantTextRowView = memo(function AssistantTextRowView({
   const projectsCodeComments = codeCommentCardsEnabled && codeCommentProjectionEnabled === true;
   const visibleText = useMemo(
     () =>
-      projectsCodeComments
-        ? projectAssistantCodeComments(row.text, { streaming }).visibleText
-        : row.text,
+      projectAssistantBrandText(
+        projectsCodeComments
+          ? projectAssistantCodeComments(row.text, { streaming }).visibleText
+          : row.text,
+        streaming,
+      ),
     [projectsCodeComments, row.text, streaming],
   );
   const visiblePreviewCards = previewCards && previewCards.length > 0 ? previewCards : null;
@@ -1751,7 +1770,7 @@ const AssistantTextRowView = memo(function AssistantTextRowView({
         <ConversationAssistantTextActions
           rowId={row.rowId}
           entityId={row.entityId}
-          text={copyText ?? row.text}
+          text={projectAssistantBrandText(copyText ?? row.text)}
           createdAt={row.createdAt}
           compactForRemoteControl={context.compactForRemoteControl}
           feedback={readAssistantFeedback(row)}

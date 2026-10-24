@@ -90,7 +90,7 @@ import type {
   SessionStoreDebugCounts,
   SqliteSessionStoreOptions,
 } from "./options.js";
-import { getDefaultSessionDbPath } from "./paths.js";
+import { getDefaultSessionDbPath, migrateLegacyDesktopSessionDb } from "./paths.js";
 import { maybeThrowStorageFsFault } from "../fs-fault-injection.js";
 import * as debugRepository from "./repositories/debug.js";
 import { createDwfJournalStore } from "./repositories/dwf-journal.js";
@@ -223,7 +223,6 @@ function assertForkBundleChildLocal(bundle: ForkCommitBundle): void {
   }
 }
 
-
 export class SqliteSessionStore
   implements
     SessionStorePort,
@@ -248,12 +247,16 @@ export class SqliteSessionStore
     this.forkCommitFaultAt = options.forkCommitFaultAt;
   }
 
-  static async open(options: SqliteSessionStoreOptions = {}, migrationOptions?: AsyncSqliteMigrationOptions): Promise<SqliteSessionStore> {
+  static async open(
+    options: SqliteSessionStoreOptions = {},
+    migrationOptions?: AsyncSqliteMigrationOptions,
+  ): Promise<SqliteSessionStore> {
     const dbPath = options.dbPath ?? getDefaultSessionDbPath();
     const startupLockTimeoutMs =
       options.startupLockTimeoutMs ?? DEFAULT_SQLITE_STARTUP_LOCK_TIMEOUT_MS;
     let db: DatabaseSync;
     try {
+      await migrateLegacyDesktopSessionDb(dbPath);
       if (dbPath !== ":memory:") {
         maybeThrowStorageFsFault({ operation: "mkdir", path: dirname(dbPath) });
         await mkdir(dirname(dbPath), { recursive: true });
@@ -268,15 +271,26 @@ export class SqliteSessionStore
       });
     }
     try {
-      const migration = await runSqliteSessionMigrationsAsync(db, dbPath, migrationOptions ?? { lockWaitTimeoutMs: startupLockTimeoutMs });
+      const migration = await runSqliteSessionMigrationsAsync(
+        db,
+        dbPath,
+        migrationOptions ?? { lockWaitTimeoutMs: startupLockTimeoutMs },
+      );
       return new SqliteSessionStore(db, dbPath, options, migration);
     } catch (error) {
-      try { db.close(); } catch { /* 关闭失败不能覆盖迁移错误。 */ }
+      try {
+        db.close();
+      } catch {
+        /* 关闭失败不能覆盖迁移错误。 */
+      }
       throw error;
     }
   }
 
-  static async openStartup(options: SqliteSessionStoreOptions = {}, migrationOptions: AsyncSqliteMigrationOptions = {}) {
+  static async openStartup(
+    options: SqliteSessionStoreOptions = {},
+    migrationOptions: AsyncSqliteMigrationOptions = {},
+  ) {
     return SqliteSessionStore.open(options, migrationOptions);
   }
 

@@ -19,9 +19,12 @@ import type {
 import {
   collectDiagnostics,
   createWorkflowProgram,
+  findUncertainWorldRun,
   type Caps,
   type ImportedRunCache,
+  type InstanceRef,
   type RunSettlement,
+  type RunRecord,
 } from "@zcode/dynamic-workflow";
 import { formatModelPickerValue } from "@zcode/shared/model-selection";
 import type { ModelSelection } from "@zcode/shared/model-selection";
@@ -61,6 +64,7 @@ import { createWorkflowRunControl } from "./workflow-run-control.js";
  * 路径上按当下并发探测算出的上界（resume 沿用 journal 记录里的 caps，不经它）。
  */
 export interface DynamicWorkflowRunEntryContext {
+  reconcileUncertainRecovery(runId: string, instance: InstanceRef): void;
   assertOpen: () => void;
   preparingRuns: Map<string, AbortController>;
   deps: DynamicWorkflowRunServiceDeps;
@@ -137,6 +141,8 @@ export async function amendDynamicWorkflowRun(
   if (original === undefined) return { ok: false, reason: "run_not_found" };
   if (original.parentSessionId !== deps.parentSessionId)
     throw new Error("Workflow parent mismatch");
+  const uncertainty = refuseUncertainRecovery(ctx, original);
+  if (uncertainty !== undefined) return uncertainty;
   const preflight = preflightAmendImport(deps.journal, request.predecessorRunId);
   if (!preflight.ok) {
     deps.logger?.info?.("Dynamic workflow amend refused", {
@@ -160,6 +166,10 @@ export async function amendDynamicWorkflowRun(
   const current = deps.journal.getRun(request.predecessorRunId);
   if (current === undefined) return { ok: false, reason: "run_not_found" };
   if (current.parentSessionId !== deps.parentSessionId) throw new Error("Workflow parent mismatch");
+  // 授权等待期间前驱可能刚派发外部效果；最后扫描到同步 abort 之间不可 await，
+  // 否则会把结果未知的前驱先停成 superseded，再拒绝并留下不存在的后继。
+  const currentUncertainty = refuseUncertainRecovery(ctx, current);
+  if (currentUncertainty !== undefined) return currentUncertainty;
   if (live !== undefined && live.terminal === undefined) {
     live.controller.abort({ superseded: runId });
     // 等前驱自己的结算 promise（与 waitForTask 同一个 promise；trackSettlement 保证它永不 reject）。
@@ -476,6 +486,8 @@ async function resumePreparedDynamicWorkflowRun(
   if (record.status === "stopped" && record.stopReason === "superseded") {
     return { ok: false, reason: "superseded" };
   }
+  const uncertainty = refuseUncertainRecovery(ctx, record);
+  if (uncertainty !== undefined) return uncertainty;
   if (!isResumableRecord(record)) return { ok: false, reason: "not_resumable" };
   // scriptText 落库始于 workflow-live-run；更早的记录没有可重跑的脚本。
   if (record.scriptText === undefined) return { ok: false, reason: "script_missing" };
@@ -549,6 +561,8 @@ async function resumePreparedDynamicWorkflowRun(
       throw new Error("Workflow parent mismatch");
     if (currentRecord.status === "stopped" && currentRecord.stopReason === "superseded")
       return { ok: false, reason: "superseded" };
+    const currentUncertainty = refuseUncertainRecovery(ctx, currentRecord);
+    if (currentUncertainty !== undefined) return currentUncertainty;
   }
   if (!currentRecord || JSON.stringify(currentRecord) !== JSON.stringify(record))
     return { ok: false, reason: "not_resumable" };
@@ -635,6 +649,32 @@ async function resumePreparedDynamicWorkflowRun(
     ok: true,
     runId,
     ...(record.toolCallId === undefined ? {} : { toolCallId: record.toolCallId }),
+  };
+}
+
+/** owner 已验证的入口共享纯判定；所有终态写入仍交给 lifecycle。 */
+function refuseUncertainRecovery(
+  ctx: DynamicWorkflowRunEntryContext,
+  record: RunRecord,
+): Extract<DynamicWorkflowRunResumeResult, { reason: "recovery_uncertain" }> | undefined {
+  const instance = findUncertainWorldRun(
+    ctx.deps.journal.listNodes(record.runId, { kinds: ["world-run"], withResult: false }),
+  );
+  if (instance === undefined) return undefined;
+  const live = ctx.runs.get(record.runId);
+  // 入口只拒绝 live/completed 等事实，旧 inactive run 的持久化及缓存修正仍由 lifecycle 唯一持有。
+  if (
+    (live === undefined || live.terminal !== undefined) &&
+    record.status !== "completed" &&
+    (record.status !== "errored" || record.failure?.code === "RecoveryUncertain") &&
+    record.stopReason !== "superseded" &&
+    record.supersededBy === undefined
+  )
+    ctx.reconcileUncertainRecovery(record.runId, instance);
+  return {
+    ok: false,
+    reason: "recovery_uncertain",
+    uncertainty: { runId: record.runId, instance },
   };
 }
 

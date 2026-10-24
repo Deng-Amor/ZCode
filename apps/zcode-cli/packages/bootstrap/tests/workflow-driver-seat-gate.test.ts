@@ -88,6 +88,7 @@ const silentSink: WorkflowReportSink = {
   concurrencyChanged: () => {},
   stopRun: () => {},
   runStalled: () => {},
+  askStalled: () => {},
 };
 
 /** 装配一个带闸门与真治理器的 driver，并起 `count` 个各自在飞一个 ask 的子代理。 */

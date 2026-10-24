@@ -16,6 +16,21 @@ import type { CommandCenterApp, CommandCenterDeps } from "../src/command-center.
 
 const ABORT = { abortSignal: new AbortController().signal };
 
+test("/dwf resume identifies uncertain effects from the trusted result and requires verification", async () => {
+  const submitPrompt = createHarness({
+    resumeWorkflowRun: async () => ({
+      ok: false,
+      reason: "recovery_uncertain",
+      uncertainty: { runId: "trusted-run", instance: { siteId: "world-site", ordinal: 2 } },
+    }),
+  });
+  const result = await submitPrompt("/dwf resume untrusted-request", ABORT);
+  assert.match(result.response, /trusted-run/u);
+  assert.match(result.response, /world-site#2/u);
+  assert.match(result.response, /outcome is unknown.*verif/iu);
+  assert.doesNotMatch(result.response, /untrusted-request|AmendWorkflow|CreateWorkflow|force/u);
+});
+
 function createHarness(app: Partial<CommandCenterApp>) {
   const deps: CommandCenterDeps = {
     getApp: async () =>

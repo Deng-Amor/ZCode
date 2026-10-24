@@ -85,6 +85,9 @@ export function collectBuildMetadata() {
 
   return {
     appVersion: normalizeVersion(rootPackageJson.version),
+    // CCode 产品发布号独立于上游运行时版本，避免改变远程资源定位及兼容检查。
+    productVersion: normalizeVersion(rootPackageJson.ccodeRelease?.version ?? rootPackageJson.version),
+    productChannel: rootPackageJson.ccodeRelease?.channel ?? "stable",
     minCompatibleVersion: normalizeVersion(
       rootPackageJson.zcodeCompatibility?.minCompatibleVersion ?? rootPackageJson.version,
     ),

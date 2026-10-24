@@ -19,6 +19,7 @@ import {
   type WorkflowRunState,
 } from "@zcode/shared/zcode-protocol-v4";
 import { toProgressPayload } from "../src/app/dynamic-workflow-run-launch.js";
+import { indexRosterEvents } from "../src/app/dynamic-workflow-run-roster-events.js";
 import { buildWorkflowRunRoster } from "../src/app/dynamic-workflow-run-roster.js";
 
 const RUN_ID = "dwfrun-roster";
@@ -796,4 +797,26 @@ describe("情势截面 — 老 journal", () => {
       health: { consecutiveFailures: 0, cachedSteps: 0, pendingQuestionsKnown: true },
     });
   });
+});
+
+it("node-stalled 不清等待、不记进展，也不写整个 run 的 stalledSince", () => {
+  const instance = { siteId: "ask#1", ordinal: 1 };
+  const before = evented([
+    [0, { type: "node-executing", instance }],
+    [10, { type: "node-waiting", instance, cause: "backoff", reason: "timeout" }],
+  ]);
+  const observed = {
+    sequence: 3,
+    timeCreated: T0 + 20,
+    event: { type: "node-stalled" as const, instance, sinceMs: 1_200_000 },
+  };
+  expect(indexRosterEvents([...before, observed], NOW)).toEqual(indexRosterEvents(before, NOW));
+  const runStall = {
+    sequence: 3,
+    timeCreated: T0 + 15,
+    event: { type: "run-stalled" as const, sinceMs: 1_200_000 },
+  };
+  expect(indexRosterEvents([...before, runStall, observed], NOW)).toEqual(
+    indexRosterEvents([...before, runStall], NOW),
+  );
 });

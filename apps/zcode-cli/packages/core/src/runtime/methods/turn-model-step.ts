@@ -706,6 +706,11 @@ async function runModelBackedTurnStepImpl(
   state.turnMachine = new TurnMachineImpl(
     state.turnMachine.receiveModelResponse(state.modelResponse),
   );
+  // 流已成功返回后的持久化等待仍可能收到取消；此处已离开模型异常 catch，
+  // 必须先收口流式工具账本，否则 turn 已取消而 ledger 仍停在 tool_started。
+  if (state.turnAbortSignal.aborted) {
+    await streamingToolCoordinator.abandon("cancelled");
+  }
   throwIfTurnAborted(state.turnAbortSignal);
 
   this.logger?.info("Model request completed", {

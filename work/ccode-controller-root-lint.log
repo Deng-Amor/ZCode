@@ -1,0 +1,935 @@
+
+> zcode@3.16.2 lint E:\ZCode
+> oxlint
+
+
+  ! eslint(no-unused-vars): Identifier 'isTasksStorageMigrated' is imported but never used.
+   ,-[packages/services/src/session/taskIndexRepo.ts:3:3]
+ 2 | import {
+ 3 |   isTasksStorageMigrated,
+   :   ^^^^^^^^^^^|^^^^^^^^^^
+   :              `-- 'isTasksStorageMigrated' is imported here
+ 4 |   isTasksStoragePrepared,
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'isTasksStoragePrepared' is imported but never used.
+   ,-[packages/services/src/session/taskIndexRepo.ts:4:3]
+ 3 |   isTasksStorageMigrated,
+ 4 |   isTasksStoragePrepared,
+   :   ^^^^^^^^^^^|^^^^^^^^^^
+   :              `-- 'isTasksStoragePrepared' is imported here
+ 5 | } from "#src/session/tasksDatabase/prepared.js";
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Type 'ZCodeTaskMeta' is imported but never used.
+   ,-[packages/services/src/session/taskChangeSummary.ts:5:3]
+ 4 |   ZCodeTaskChangedFileSummary,
+ 5 |   ZCodeTaskMeta,
+   :   ^^^^^^|^^^^^^
+   :         `-- 'ZCodeTaskMeta' is imported here
+ 6 | } from "@zcode/shared";
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Variable 'ONE_HOUR_MS' is declared but never used. Unused variables should start with a '_'.
+    ,-[packages/desktop/test/autoUpdaterReadyState.test.ts:19:7]
+ 18 | 
+ 19 | const ONE_HOUR_MS = 60 * 60 * 1000;
+    :       ^^^^^|^^^^^
+    :            `-- 'ONE_HOUR_MS' is declared here
+ 20 | const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
+    `----
+  help: Consider removing this declaration.
+
+  ! eslint(no-unused-vars): Type 'SqliteMigration' is imported but never used.
+   ,-[packages/services/src/session/tasksDatabase/migrations.ts:6:33]
+ 5 | import type { DatabaseSync } from "node:sqlite";
+ 6 | import { sqliteMigrations, type SqliteMigration } from "@zcode/shared/sqlite-migrations";
+   :                                 ^^^^^^^|^^^^^^^
+   :                                        `-- 'SqliteMigration' is imported here
+ 7 | import {
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Interface 'AskUserQuestionAnswerDraft' is declared but never used.
+    ,-[packages/ui/src/lib/askUserQuestion.ts:26:11]
+ 25 | 
+ 26 | interface AskUserQuestionAnswerDraft {
+    :           ^^^^^^^^^^^^^|^^^^^^^^^^^^
+    :                        `-- 'AskUserQuestionAnswerDraft' is declared here
+ 27 |   selectedOptionIds: string[];
+    `----
+  help: Consider removing this declaration.
+
+  ! eslint-plugin-unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+     ,-[packages/desktop/src/host/startupDiskSampler.ts:107:28]
+ 106 |     try {
+ 107 |       for (const scope of [...this.scopes.values()]) {
+     :                            ^^^
+ 108 |         if (this.stopped) break;
+     `----
+  help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+
+  ! eslint(no-unused-vars): Type 'SessionWorkflowActivity' is imported but never used.
+    ,-[packages/shared/src/web-remote-control.ts:22:15]
+ 21 | import type { ZCodeProvider } from "./zcode-task-types-core.js";
+ 22 | import type { SessionWorkflowActivity } from "./zcode-protocol-v4/sessions-index-workflow-activity.js";
+    :               ^^^^^^^^^^^|^^^^^^^^^^^
+    :                          `-- 'SessionWorkflowActivity' is imported here
+ 23 | import type { WebRemoteControlRpcTransportPayload } from "./web-remote-control-rpc-transport.js";
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-useless-escape): Unnecessary escape character '"'
+     ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-subagent.test.ts:251:69]
+ 250 |           prepared.config,
+ 251 |           'F=$(ls -t ~/.zcode/cli/log/*.jsonl | head -n1); grep -c "\"Agent\"" "$F" || true; grep -o "\"event\":\"[a-z_.]*subagent[a-z_.]*\"" "$F" | sort | uniq -c | tail -n 8',
+     :                                                                     ^^
+ 252 |         );
+     `----
+  help: Replace `\"` with `"`.
+
+  ! eslint(no-useless-escape): Unnecessary escape character '"'
+     ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-subagent.test.ts:251:76]
+ 250 |           prepared.config,
+ 251 |           'F=$(ls -t ~/.zcode/cli/log/*.jsonl | head -n1); grep -c "\"Agent\"" "$F" || true; grep -o "\"event\":\"[a-z_.]*subagent[a-z_.]*\"" "$F" | sort | uniq -c | tail -n 8',
+     :                                                                            ^^
+ 252 |         );
+     `----
+  help: Replace `\"` with `"`.
+
+  ! eslint(no-useless-escape): Unnecessary escape character '"'
+     ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-subagent.test.ts:251:103]
+ 250 |           prepared.config,
+ 251 |           'F=$(ls -t ~/.zcode/cli/log/*.jsonl | head -n1); grep -c "\"Agent\"" "$F" || true; grep -o "\"event\":\"[a-z_.]*subagent[a-z_.]*\"" "$F" | sort | uniq -c | tail -n 8',
+     :                                                                                                       ^^
+ 252 |         );
+     `----
+  help: Replace `\"` with `"`.
+
+  ! eslint(no-useless-escape): Unnecessary escape character '"'
+     ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-subagent.test.ts:251:110]
+ 250 |           prepared.config,
+ 251 |           'F=$(ls -t ~/.zcode/cli/log/*.jsonl | head -n1); grep -c "\"Agent\"" "$F" || true; grep -o "\"event\":\"[a-z_.]*subagent[a-z_.]*\"" "$F" | sort | uniq -c | tail -n 8',
+     :                                                                                                              ^^
+ 252 |         );
+     `----
+  help: Replace `\"` with `"`.
+
+  ! eslint(no-useless-escape): Unnecessary escape character '"'
+     ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-subagent.test.ts:251:113]
+ 250 |           prepared.config,
+ 251 |           'F=$(ls -t ~/.zcode/cli/log/*.jsonl | head -n1); grep -c "\"Agent\"" "$F" || true; grep -o "\"event\":\"[a-z_.]*subagent[a-z_.]*\"" "$F" | sort | uniq -c | tail -n 8',
+     :                                                                                                                 ^^
+ 252 |         );
+     `----
+  help: Replace `\"` with `"`.
+
+  ! eslint(no-useless-escape): Unnecessary escape character '"'
+     ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-subagent.test.ts:251:139]
+ 250 |           prepared.config,
+ 251 |           'F=$(ls -t ~/.zcode/cli/log/*.jsonl | head -n1); grep -c "\"Agent\"" "$F" || true; grep -o "\"event\":\"[a-z_.]*subagent[a-z_.]*\"" "$F" | sort | uniq -c | tail -n 8',
+     :                                                                                                                                           ^^
+ 252 |         );
+     `----
+  help: Replace `\"` with `"`.
+
+  ! eslint(no-unused-vars): Type 'AppSettings' is imported but never used.
+   ,-[packages/shared/src/validationAppSettings.ts:4:15]
+ 3 | import { appToolSearchModeSchema } from "./app-runtime-preferences.js";
+ 4 | import type { AppSettings } from "./protocol.js";
+   :               ^^^^^|^^^^^
+   :                    `-- 'AppSettings' is imported here
+ 5 | import { REMOTE_ASSET_INSTALL_MODES } from "./remoteAssetInstallMode.js";
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'join' is imported but never used.
+   ,-[packages/desktop/scripts/node-pty-rebuild.mjs:3:19]
+ 2 | import { access } from "node:fs/promises";
+ 3 | import { dirname, join, normalize, posix as posixPath, sep } from "node:path";
+   :                   ^^|^
+   :                     `-- 'join' is imported here
+ 4 | import process from "node:process";
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'getPathLeaf' is imported but never used.
+   ,-[packages/ui/src/lib/treemappingActivity.ts:3:10]
+ 2 | import type { TaskChatMessage, TaskChatToolCall } from "@/lib/taskChatMessageTypes.js";
+ 3 | import { getPathLeaf, isAbsoluteFilePath } from "@/lib/path.js";
+   :          ^^^^^|^^^^^
+   :               `-- 'getPathLeaf' is imported here
+ 4 | import { readRawToolCallFileSummaries } from "@/ToolCallBlocks/fileSummaries.js";
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'sessionWorkflowActivitySchema' is imported but never used.
+    ,-[packages/shared/src/validation.ts:27:10]
+ 26 | import { sourceServerArtifactPolicySchema } from "./source-server/release.js";
+ 27 | import { sessionWorkflowActivitySchema } from "./zcode-protocol-v4/sessions-index-workflow-activity.js";
+    :          ^^^^^^^^^^^^^^|^^^^^^^^^^^^^^
+    :                        `-- 'sessionWorkflowActivitySchema' is imported here
+ 28 | import {
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'shell' is imported but never used.
+    ,-[packages/desktop/src/main/index.ts:48:3]
+ 47 |   session,
+ 48 |   shell,
+    :   ^^|^^
+    :     `-- 'shell' is imported here
+ 49 |   webContents,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'migrateApplicationStorage' is imported but never used.
+    ,-[packages/desktop/src/main/index.ts:70:3]
+ 69 |   setDataBaseDir,
+ 70 |   migrateApplicationStorage,
+    :   ^^^^^^^^^^^^|^^^^^^^^^^^^
+    :               `-- 'migrateApplicationStorage' is imported here
+ 71 |   resolveDefaultZCodeAgentCommand,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'resolveDefaultZCodeAgentCommand' is imported but never used.
+    ,-[packages/desktop/src/main/index.ts:71:3]
+ 70 |   migrateApplicationStorage,
+ 71 |   resolveDefaultZCodeAgentCommand,
+    :   ^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^
+    :                  `-- 'resolveDefaultZCodeAgentCommand' is imported here
+ 72 |   startupStorage,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'startupStorage' is imported but never used.
+    ,-[packages/desktop/src/main/index.ts:72:3]
+ 71 |   resolveDefaultZCodeAgentCommand,
+ 72 |   startupStorage,
+    :   ^^^^^^^|^^^^^^
+    :          `-- 'startupStorage' is imported here
+ 73 | } from "@zcode/services/node";
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Type 'RemoteTarget' is imported but never used.
+    ,-[packages/desktop/src/main/desktopHostProcess.ts:15:8]
+ 14 |   type HostPluginTelemetryResponse,
+ 15 |   type RemoteTarget,
+    :        ^^^^^^|^^^^^
+    :              `-- 'RemoteTarget' is imported here
+ 16 |   type TaskRealtimeHostDeliveryKind,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Function 'getCtrlModifierLabel' is declared but never used.
+    ,-[packages/ui/src/lib/keyboardShortcuts.ts:48:10]
+ 47 | 
+ 48 | function getCtrlModifierLabel(platformInfo?: KeyboardShortcutPlatformInfo): string {
+    :          ^^^^^^^^^^|^^^^^^^^^
+    :                    `-- 'getCtrlModifierLabel' is declared here
+ 49 |   return isAppleKeyboardPlatform(platformInfo) ? "⌃" : "Ctrl";
+    `----
+  help: Consider removing this declaration.
+
+  ! eslint(no-unused-vars): Identifier 'getIconPalette' is imported but never used.
+   ,-[packages/ui/src/lib/fileDisplay.tsx:8:3]
+ 7 |   resolveIconName,
+ 8 |   getIconPalette,
+   :   ^^^^^^^|^^^^^^
+   :          `-- 'getIconPalette' is imported here
+ 9 |   getIconLabel,
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'getIconLabel' is imported but never used.
+    ,-[packages/ui/src/lib/fileDisplay.tsx:9:3]
+  8 |   getIconPalette,
+  9 |   getIconLabel,
+    :   ^^^^^^|^^^^^
+    :         `-- 'getIconLabel' is imported here
+ 10 |   buildInlineSvgDataUrl,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'buildInlineSvgDataUrl' is imported but never used.
+    ,-[packages/ui/src/lib/fileDisplay.tsx:10:3]
+  9 |   getIconLabel,
+ 10 |   buildInlineSvgDataUrl,
+    :   ^^^^^^^^^^|^^^^^^^^^^
+    :             `-- 'buildInlineSvgDataUrl' is imported here
+ 11 | } from "@/lib/fileDisplayHelpers.js";
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'readRemoteTabSnapshot' is imported but never used.
+    ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-soak-dual.test.ts:25:3]
+ 24 |   readHostProcesses,
+ 25 |   readRemoteTabSnapshot,
+    :   ^^^^^^^^^^|^^^^^^^^^^
+    :             `-- 'readRemoteTabSnapshot' is imported here
+ 26 |   runSSHCommand,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'waitForV4AssistantMessageContaining' is imported but never used.
+    ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-soak-dual.test.ts:31:3]
+ 30 |   sendV4PromptAndWaitAccepted,
+ 31 |   waitForV4AssistantMessageContaining,
+    :   ^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^
+    :                    `-- 'waitForV4AssistantMessageContaining' is imported here
+ 32 |   waitForV4ConversationState,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Parameter 'disposables' is declared but never used. Unused parameters should start with a '_'.
+    ,-[packages/rpc/src/proxy-channel.ts:48:5]
+ 47 |     service: unknown,
+ 48 |     disposables?: DisposableStore,
+    :     ^^^^^|^^^^^
+    :          `-- 'disposables' is declared here
+ 49 |   ): IServerChannel<TContext> {
+    `----
+  help: Consider removing this parameter.
+
+  ! typescript-eslint(no-this-alias): Unexpected aliasing of 'this' to local variable.
+     ,-[packages/rpc/src/ipc.ts:161:11]
+ 160 |   ): T {
+ 161 |     const that = this;
+     :           ^^^^
+ 162 |     const isFilter = typeof routerOrFilter === "function";
+     `----
+  help: Assigning a variable to this instead of properly using arrow lambdas may be a symptom of pre-ES2015 practices or not managing scope well.
+
+  ! typescript-eslint(no-this-alias): Unexpected aliasing of 'this' to local variable.
+     ,-[packages/rpc/src/ipc.ts:219:11]
+ 218 |   ): Event<T> {
+ 219 |     const that = this;
+     :           ^^^^
+ 220 |     let disposables: DisposableStore | undefined;
+     `----
+  help: Assigning a variable to this instead of properly using arrow lambdas may be a symptom of pre-ES2015 practices or not managing scope well.
+
+  ! eslint-plugin-unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+     ,-[packages/rpc/src/foundation.ts:158:29]
+ 157 |     }
+ 158 |     for (const listener of [...this.listeners]) {
+     :                             ^^^
+ 159 |       listener(event);
+     `----
+  help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+
+  ! eslint(no-unused-vars): Identifier 'DesktopCommandIds' is imported but never used.
+    ,-[packages/desktop/src/main/desktopMainIpcPlatform.ts:10:3]
+  9 | import {
+ 10 |   DesktopCommandIds,
+    :   ^^^^^^^^|^^^^^^^^
+    :           `-- 'DesktopCommandIds' is imported here
+ 11 |   appSettingsPatchSchema,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Parameter 'connectTo' is declared but never used. Unused parameters should start with a '_'.
+     ,-[packages/rpc/examples/04-remote-connection.ts:136:12]
+ 135 | class MockWebSocketFactory implements ISocketFactory<RemoteConnectionType.WebSocket> {
+ 136 |   supports(connectTo: RemoteConnection & { type: RemoteConnectionType.WebSocket }): boolean {
+     :            ^^^^|^^^^
+     :                `-- 'connectTo' is declared here
+ 137 |     return true;
+     `----
+  help: Consider removing this parameter.
+
+  ! eslint(no-unsafe-finally): Unsafe `finally` block.
+     ,-[packages/services/src/project-storage/startup.ts:99:21]
+  98 |     } catch (error) {
+  99 |       if (!failure) throw error;
+     :                     ^^^^^^^^^^^^
+ 100 |     }
+     `----
+  help: Control flow inside `try` or `catch` blocks will be overwritten by this statement.
+
+  ! eslint(no-unsafe-finally): Unsafe `finally` block.
+     ,-[packages/services/src/project-storage/startup.ts:124:46]
+ 123 |     }
+ 124 |     if (!preparationFailure && closeFailure) throw closeFailure;
+     :                                              ^^^^^^^^^^^^^^^^^^^
+ 125 |   }
+     `----
+  help: Control flow inside `try` or `catch` blocks will be overwritten by this statement.
+
+  ! eslint-plugin-unicorn(no-new-array): Do not use `new Array(singleArgument)`.
+     ,-[packages/services/src/conversation-share/conversationShareService.ts:110:19]
+ 109 |   if (items.length === 0) return [];
+ 110 |   const results = new Array<Output>(items.length);
+     :                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 111 |   let nextIndex = 0;
+     `----
+  help: It's not clear whether the argument is meant to be the length of the array or the only element. If the argument is the array's length, consider using `Array.from({ length: n })`. If the argument is the only element, use `[element]`.
+
+  ! eslint(no-unused-vars): Identifier 'ensureToolCrossProductFullAccessMode' is imported but never used.
+   ,-[packages/desktop/test/e2e/conversation-session/conversation-session-background-bash-output.test.ts:5:10]
+ 4 | import { resolveE2ERuntimePath } from "../helpers/e2e-runtime-paths.js";
+ 5 | import { ensureToolCrossProductFullAccessMode } from "../helpers/conversation-session-tool-cross-product.js";
+   :          ^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^
+   :                            `-- 'ensureToolCrossProductFullAccessMode' is imported here
+ 6 | import { countUpstreamRequests } from "../helpers/conversation-session-network.js";
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Variable 'MEDIA_FILES' is declared but never used. Unused variables should start with a '_'.
+    ,-[packages/desktop/test/e2e/conversation-session/conversation-session-assistant-preview-cards.test.ts:55:7]
+ 54 | ] as const;
+ 55 | const MEDIA_FILES = ["生成 视频.mp4", "生成 音频.wav"] as const;
+    :       ^^^^^|^^^^^
+    :            `-- 'MEDIA_FILES' is declared here
+ 56 | 
+    `----
+  help: Consider removing this declaration.
+
+  ! eslint(no-unused-vars): Identifier 'readRemoteTabSnapshot' is imported but never used.
+    ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-mobile-permission.test.ts:26:3]
+ 25 |   readHostProcesses,
+ 26 |   readRemoteTabSnapshot,
+    :   ^^^^^^^^^^|^^^^^^^^^^
+    :             `-- 'readRemoteTabSnapshot' is imported here
+ 27 |   runSSHCommand,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Function 'mobileText' is declared but never used.
+     ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-mobile-permission.test.ts:145:16]
+ 144 | 
+ 145 | async function mobileText(page: PwPage): Promise<string> {
+     :                ^^^^^|^^^^
+     :                     `-- 'mobileText' is declared here
+ 146 |   return (await page.evaluate(() => document.body?.innerText ?? "")) as string;
+     `----
+  help: Consider removing this declaration.
+
+  ! eslint(no-unused-vars): Identifier 'clickTestIdByDom' is imported but never used.
+    ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-file-local-actions.test.ts:16:3]
+ 15 |   clearAppData,
+ 16 |   clickTestIdByDom,
+    :   ^^^^^^^^|^^^^^^^
+    :           `-- 'clickTestIdByDom' is imported here
+ 17 |   hoverTestIdByWebDriver,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'hoverTestIdByWebDriver' is imported but never used.
+    ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-file-local-actions.test.ts:17:3]
+ 16 |   clickTestIdByDom,
+ 17 |   hoverTestIdByWebDriver,
+    :   ^^^^^^^^^^^|^^^^^^^^^^
+    :              `-- 'hoverTestIdByWebDriver' is imported here
+ 18 |   waitForTestIdByDom,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Type 'BotWorkspaceRef' is imported but never used.
+   ,-[packages/ui/src/BotsDialog/shared.tsx:5:3]
+ 4 |   BotServiceStatus,
+ 5 |   BotWorkspaceRef,
+   :   ^^^^^^^|^^^^^^^
+   :          `-- 'BotWorkspaceRef' is imported here
+ 6 | } from "@zcode/shared";
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'isAbsolute' is imported but never used.
+   ,-[packages/desktop/test/e2e/conversation-session/conversation-session-pasted-image-path-edge-cases.test.ts:2:29]
+ 1 | import { readdir, readFile, stat, unlink } from "node:fs/promises";
+ 2 | import { basename, dirname, isAbsolute, join } from "node:path";
+   :                             ^^^^^|^^^^
+   :                                  `-- 'isAbsolute' is imported here
+ 3 | import { encodeCustomModelValue } from "@zcode/shared";
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'createServiceDescriptor' is imported but never used.
+   ,-[packages/zcode-server-cli/test/platform.test.ts:5:3]
+ 4 |   createDaemonServiceDescriptor,
+ 5 |   createServiceDescriptor,
+   :   ^^^^^^^^^^^|^^^^^^^^^^^
+   :              `-- 'createServiceDescriptor' is imported here
+ 6 |   serviceDescriptorPath,
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'parsePersonalModelConfigRules' is imported but never used.
+   ,-[packages/provider/test/todo21-source-contracts.test.ts:4:3]
+ 3 |   parseAccountProviderConfigMap,
+ 4 |   parsePersonalModelConfigRules,
+   :   ^^^^^^^^^^^^^^|^^^^^^^^^^^^^^
+   :                 `-- 'parsePersonalModelConfigRules' is imported here
+ 5 |   parsePersonalProviderConfigMap,
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'createAccountProviderConfig' is imported but never used.
+    ,-[packages/provider/test/registry-service.test.ts:14:3]
+ 13 | import {
+ 14 |   createAccountProviderConfig,
+    :   ^^^^^^^^^^^^^|^^^^^^^^^^^^^
+    :                `-- 'createAccountProviderConfig' is imported here
+ 15 |   createApiKeyProviderConfig,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-control-regex): Unexpected control character
+     ,-[packages/shared/src/zcode-protocol-v4/transport.ts:863:18]
+ 862 |       .max(255)
+ 863 |       .regex(/^[^\0\r\n]+$/),
+     :                  ^|
+     :                   `-- '\0' matches the null character (U+0000), which is a control character.
+ 864 |     mime: z
+     `----
+  help: Avoid matching control characters in regular expressions. If intentional, consider using a Unicode escape instead.
+
+  ! eslint-plugin-unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+    ,-[packages/ui/src/v4/taskListMembershipVersion.ts:13:27]
+ 12 |   version += 1;
+ 13 |   for (const listener of [...listeners]) {
+    :                           ^^^
+ 14 |     listener();
+    `----
+  help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+
+  ! eslint(no-unused-vars): Identifier 'buildServerRemoteWorkspaceIdentity' is imported but never used.
+   ,-[packages/desktop/test/desktopRemoteSessions.test.ts:5:3]
+ 4 |   buildRemoteWorkspaceIdentity,
+ 5 |   buildServerRemoteWorkspaceIdentity,
+   :   ^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^
+   :                    `-- 'buildServerRemoteWorkspaceIdentity' is imported here
+ 6 |   HostMessageTypes,
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'resolveBotRemoteWorkspace' is imported but never used.
+    ,-[packages/desktop/test/desktopRemoteSessions.test.ts:12:10]
+ 11 | } from "@zcode/shared";
+ 12 | import { resolveBotRemoteWorkspace } from "../src/host/botRemoteWorkspaceResolver.js";
+    :          ^^^^^^^^^^^^|^^^^^^^^^^^^
+    :                      `-- 'resolveBotRemoteWorkspace' is imported here
+ 13 | import { createRemoteWorkspaceSessionManager } from "../src/main/desktopRemoteSessions.js";
+    `----
+  help: Consider removing this import.
+
+  ! eslint-plugin-unicorn(no-useless-length-check): Found a useless array length check
+     ,-[packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-r3-attachments.test.ts:278:11]
+ 277 |         return (
+ 278 |           failed.length === 0 ||
+     :           ^^^^^^^^^^^^^^^^^^^
+ 279 |           failed.every((s) => s.status && s.status !== "uploading" && s.status !== "pending")
+     `----
+  help: The empty check is useless as `Array#every()` returns `true` for an empty array.
+
+  ! eslint(no-unused-vars): Identifier 'seedDeleteAllArchivedTasksFixture' is imported but never used.
+     ,-[packages/desktop/wdio.conf.ts:189:10]
+ 188 | import { seedTaskIndexRowAuthorityFixture } from "./test/e2e/helpers/task-list-row-authority-fixture.js";
+ 189 | import { seedDeleteAllArchivedTasksFixture } from "./test/e2e/helpers/delete-all-archived-tasks-fixture.js";
+     :          ^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^
+     :                          `-- 'seedDeleteAllArchivedTasksFixture' is imported here
+ 190 | import { seedTaskTitleMarqueeFixture } from "./test/e2e/helpers/task-title-marquee-fixture.js";
+     `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Parameter 'specs' is declared but never used. Unused parameters should start with a '_'.
+     ,-[packages/desktop/wdio.conf.ts:839:38]
+ 838 | 
+ 839 | function resolveActiveE2EProviderEnv(specs: string[] = configuredE2ESpecs) {
+     :                                      ^^|^^
+     :                                        `-- 'specs' is declared here
+ 840 |   return {
+     `----
+  help: Consider removing this parameter.
+
+  ! eslint(no-unused-vars): Variable 'DEFAULT_OUTPUT_STYLE' is declared but never used. Unused variables should start with a '_'.
+   ,-[packages/services/src/output-style/outputStyleService.ts:8:7]
+ 7 | 
+ 8 | const DEFAULT_OUTPUT_STYLE = "default";
+   :       ^^^^^^^^^^|^^^^^^^^^
+   :                 `-- 'DEFAULT_OUTPUT_STYLE' is declared here
+ 9 | const SETTINGS_FILE = "settings.json";
+   `----
+  help: Consider removing this declaration.
+
+  ! eslint(no-unused-vars): Variable 'commandsService' is declared but never used. Unused variables should start with a '_'.
+      ,-[packages/services/src/node.ts:1705:9]
+ 1704 |   });
+ 1705 |   const commandsService = createCommandsService({ isDesktopRuntime: true });
+      :         ^^^^^^^|^^^^^^^
+      :                `-- 'commandsService' is declared here
+ 1706 |   const hooksService = createHooksService({
+      `----
+  help: Consider removing this declaration.
+
+  ! eslint(no-unused-vars): Variable 'hooksService' is declared but never used. Unused variables should start with a '_'.
+      ,-[packages/services/src/node.ts:1706:9]
+ 1705 |   const commandsService = createCommandsService({ isDesktopRuntime: true });
+ 1706 |   const hooksService = createHooksService({
+      :         ^^^^^^|^^^^^
+      :               `-- 'hooksService' is declared here
+ 1707 |     grantWorkspaceHookTrust: (params) => zcodeAgentService.grantWorkspaceHookTrust(params),
+      `----
+  help: Consider removing this declaration.
+
+  ! eslint(no-unused-vars): Variable 'memoryService' is declared but never used. Unused variables should start with a '_'.
+      ,-[packages/services/src/node.ts:1709:9]
+ 1708 |   });
+ 1709 |   const memoryService = createMemoryService();
+      :         ^^^^^^|^^^^^^
+      :               `-- 'memoryService' is declared here
+ 1710 |   // 只要当前进程已经装配 Provider Runtime，就由该 Environment 自己的 Selection View
+      `----
+  help: Consider removing this declaration.
+
+  ! eslint(no-control-regex): Unexpected control characters
+    ,-[packages/ui/src/plugin-ui/domain/pluginUiDownloadFile.ts:50:19]
+ 49 |   return name
+ 50 |     .replace(/[\\/\u0000-\u001f]/g, "_")
+    :                   ^^^|^^ ^^^|^^
+    :                      |      `-- 'U+001F' is a control character.
+    :                      `-- 'U+0000' is a control character.
+ 51 |     .replace(/^\.+/, "")
+    `----
+  help: Avoid matching control characters in regular expressions. If intentional, consider using a Unicode escape instead.
+
+  ! eslint-plugin-unicorn(no-new-array): Do not use `new Array(singleArgument)`.
+    ,-[apps/zcode-cli/packages/dynamic-workflow/tests/smoke/xiangqi-two-agent-match-b.dwf.ts:55:23]
+ 54 | function initialBoard(): string[] {
+ 55 |   const b: string[] = new Array<string>(90).fill('.');
+    :                       ^^^^^^^^^^^^^^^^^^^^^
+ 56 |   const back = 'rhbakabhr';
+    `----
+  help: It's not clear whether the argument is meant to be the length of the array or the only element. If the argument is the array's length, consider using `Array.from({ length: n })`. If the argument is the only element, use `[element]`.
+
+  ! eslint-plugin-unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+     ,-[packages/ui/test/highspeed/sessionPaneHighspeedActivation.test.ts:258:27]
+ 257 | function triggerDomEvent(target: "document" | "window", type: string): void {
+ 258 |   for (const listener of [...domEventListeners]) {
+     :                           ^^^
+ 259 |     if (listener.target === target && listener.type === type) listener.handler();
+     `----
+  help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+
+  ! eslint(no-unused-vars): Variable 'handleCreateProjectDraft' is declared but never used. Unused variables should start with a '_'.
+      ,-[packages/ui/src/app-shell/WorkspaceShellLayout.tsx:1483:9]
+ 1482 |   );
+ 1483 |   const handleCreateProjectDraft = useCallback(
+      :         ^^^^^^^^^^^^|^^^^^^^^^^^
+      :                     `-- 'handleCreateProjectDraft' is declared here
+ 1484 |     (path: string, identity?: string) =>
+      `----
+  help: Consider removing this declaration.
+
+  ! eslint(no-eval): eval can be harmful.
+   ,-[apps/zcode-cli/packages/dynamic-workflow/tests/lowering/expected/holes.js:2:108]
+ 1 | const survey = await __host.ask("ask#1", __host.createActor("actor#1", "勘察员"), "列出最慢的测试文件");
+ 2 | const plan = await __host.hole("hole#21b40fca", "决定分组", `最慢的是 ${survey.slowest}`, __src => eval(__src), async () => {
+   :                                                                                                    ^^^^
+ 3 |     __host.enterPhase("\u5206\u7EC4");
+   `----
+  help: Avoid eval(). For JSON parsing use JSON.parse(); for dynamic property access use bracket notation (obj[key]); for other cases refactor to avoid evaluating strings as code.
+
+  ! eslint(no-eval): eval can be harmful.
+   ,-[apps/zcode-cli/packages/dynamic-workflow/tests/lowering/expected/holes.js:8:83]
+ 7 | });
+ 8 | const order = await __host.hole("hole#7c7fc07b", "决定顺序", void 0, __src => eval(__src));
+   :                                                                               ^^^^
+ 9 | const done = await __host.ask("ask#2", __host.createActor("actor#2", "执行者"), `按 ${plan.groups.length} 组执行，先跑 ${order}`);
+   `----
+  help: Avoid eval(). For JSON parsing use JSON.parse(); for dynamic property access use bracket notation (obj[key]); for other cases refactor to avoid evaluating strings as code.
+
+  ! eslint(no-eval): eval can be harmful.
+    ,-[apps/zcode-cli/packages/dynamic-workflow/tests/lowering/expected/holes.js:10:88]
+  9 | const done = await __host.ask("ask#2", __host.createActor("actor#2", "执行者"), `按 ${plan.groups.length} 组执行，先跑 ${order}`);
+ 10 | return await __host.hole("hole#cd7e8315", "评判", `执行结果：${done}`, __src => eval(__src));
+    :                                                                                 ^^^^
+    `----
+  help: Avoid eval(). For JSON parsing use JSON.parse(); for dynamic property access use bracket notation (obj[key]); for other cases refactor to avoid evaluating strings as code.
+
+  ! eslint(no-unused-vars): Identifier 'isMainRendererUrl' is imported but never used.
+   ,-[packages/desktop/test/e2e/workspace-passive-agent-startup.test.ts:8:3]
+ 7 | import {
+ 8 |   isMainRendererUrl,
+   :   ^^^^^^^^|^^^^^^^^
+   :           `-- 'isMainRendererUrl' is imported here
+ 9 |   isResourceManagerUrl,
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'isMainRendererUrl' is imported but never used.
+   ,-[packages/desktop/test/e2e/workspace-agent-warmup-small-set.test.ts:8:3]
+ 7 | import {
+ 8 |   isMainRendererUrl,
+   :   ^^^^^^^^|^^^^^^^^
+   :           `-- 'isMainRendererUrl' is imported here
+ 9 |   isResourceManagerUrl,
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Parameter 'options' is declared but never used. Unused parameters should start with a '_'.
+     ,-[packages/services/src/zcode-agent/zcodeTaskIndexSyncer.ts:593:5]
+ 592 |     summary: SessionSummary,
+ 593 |     options?: { captureRepoSnapshot?: boolean },
+     :     ^^^|^^^
+     :        `-- 'options' is declared here
+ 594 |   ): void {
+     `----
+  help: Consider removing this parameter.
+
+  ! eslint-plugin-unicorn(no-useless-spread): Using a spread operator here creates a new object unnecessarily.
+     ,-[packages/services/src/zcode-agent/zcodeTaskIndexSyncer.ts:626:11]
+ 625 |           // 行缺失时则把同一 signal 交给回源结果，保证提醒既不丢也不重复。
+ 626 |           ...(meta || !unreadSignal ? {} : { unreadSignal }),
+     :           ^^^
+ 627 |         });
+     `----
+  help: `meta || !unreadSignal ? {} : { unreadSignal }` returns a new object. Spreading it into an object expression to create a new object is redundant.
+
+  ! eslint(no-unsafe-optional-chaining): Unsafe usage of optional chaining
+     ,-[packages/ui/test/feedbackSubmitFormRetry.test.ts:255:18]
+ 254 |       expect(formCapture.logProps?.checked).toBe(includeLogs ?? true);
+ 255 |       act(() => (formCapture.logProps?.onCheckedChange as (checked: boolean) => void)(false));
+     :                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 256 |       await act(async () => {
+     `----
+  help: If this short-circuits with 'undefined' the evaluation will throw TypeError
+
+  ! eslint(no-unused-vars): Identifier 'resolveSeededReplayBaseUrl' is imported but never used.
+   ,-[packages/desktop/test/e2e/conversation-session/conversation-session-ssh-remote-p0.test.ts:8:10]
+ 7 | } from "../helpers/custom-openai-provider.js";
+ 8 | import { resolveSeededReplayBaseUrl } from "../helpers/custom-openai-provider-store.js";
+   :          ^^^^^^^^^^^^^|^^^^^^^^^^^^
+   :                       `-- 'resolveSeededReplayBaseUrl' is imported here
+ 9 | import {
+   `----
+  help: Consider removing this import.
+
+  ! eslint-plugin-unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+     ,-[packages/ui/test/v4DraftRuntimeRebuildGate.test.ts:128:33]
+ 127 |       act(() => {
+ 128 |         for (const listener of [...listeners]) listener();
+     :                                 ^^^
+ 129 |       });
+     `----
+  help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+
+  ! eslint-plugin-unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+     ,-[packages/ui/test/v4DraftRuntimeRebuildGate.test.ts:144:33]
+ 143 |       act(() => {
+ 144 |         for (const listener of [...listeners]) listener(state);
+     :                                 ^^^
+ 145 |       });
+     `----
+  help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+
+  ! eslint(no-unused-vars): Identifier 'waitForTestIdByDom' is imported but never used.
+    ,-[packages/desktop/test/e2e/ui-shell/marketing-touch-entitlement.test.ts:23:3]
+ 22 |   seedSettings,
+ 23 |   waitForTestIdByDom,
+    :   ^^^^^^^^^|^^^^^^^^
+    :            `-- 'waitForTestIdByDom' is imported here
+ 24 | } from "../helpers/desktop-app.js";
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Function 'readTestIdText' is declared but never used.
+     ,-[packages/desktop/test/e2e/ui-shell/marketing-touch-entitlement.test.ts:449:16]
+ 448 | 
+ 449 | async function readTestIdText(testId: string): Promise<string> {
+     :                ^^^^^^^|^^^^^^
+     :                       `-- 'readTestIdText' is declared here
+ 450 |   return (await browser.execute(
+     `----
+  help: Consider removing this declaration.
+
+  ! eslint-plugin-unicorn(no-useless-spread): Using a spread operator here creates a new object unnecessarily.
+     ,-[packages/ui/test/v4ConversationTurnGroup.test.ts:485:11]
+ 484 |         userInputRow(2, {
+ 485 |           ...(highspeed
+     :           ^^^
+ 486 |             ? {
+     `----
+  help: This expression returns a new object. Spreading it into an object expression to create a new object is redundant.
+
+  ! eslint(no-unused-vars): Identifier 'writeFile' is imported but never used.
+   ,-[packages/ui/test/browser/manual-review/pending/composer-toolbar-fit.test.mjs:5:17]
+ 4 | import { fileURLToPath } from "node:url";
+ 5 | import { mkdir, writeFile } from "node:fs/promises";
+   :                 ^^^^|^^^^
+   :                     `-- 'writeFile' is imported here
+ 6 | import { join } from "node:path";
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Parameter 'onOpenWorkspace' is declared but never used. Unused parameters should start with a '_'.
+     ,-[packages/ui/src/SettingsPage.tsx:302:3]
+ 301 |   onCreateTask,
+ 302 |   onOpenWorkspace,
+     :   ^^^^^^^|^^^^^^^
+     :          `-- 'onOpenWorkspace' is declared here
+ 303 |   onOpenRemoteWorkspace,
+     `----
+  help: Consider removing this parameter.
+
+  ! eslint(no-unused-vars): Parameter 'allowOpenWorkspace' is declared but never used. Unused parameters should start with a '_'.
+     ,-[packages/ui/src/SettingsPage.tsx:304:3]
+ 303 |   onOpenRemoteWorkspace,
+ 304 |   allowOpenWorkspace = true,
+     :   ^^^^^^^^^|^^^^^^^^
+     :            `-- 'allowOpenWorkspace' is declared here
+ 305 |   onLogin,
+     `----
+  help: Consider removing this parameter.
+
+  ! eslint(no-unsafe-optional-chaining): Unsafe usage of optional chaining
+     ,-[packages/ui/test/pluginStoreCardRestorable.test.ts:189:6]
+ 188 |     const button = buttonProps.find((props) => props["data-testid"] === "plugin-store-open-ui");
+ 189 |     (button?.onClick as (event: { stopPropagation: () => void }) => void)({
+     :      ^^^^^^^^^^^^^^^
+ 190 |       stopPropagation: () => {},
+     `----
+  help: If this short-circuits with 'undefined' the evaluation will throw TypeError
+
+  ! eslint(no-unsafe-optional-chaining): Unsafe usage of optional chaining
+     ,-[packages/ui/test/pluginStoreCardRestorable.test.ts:203:6]
+ 202 |     );
+ 203 |     (button?.onClick as () => void)();
+     :      ^^^^^^^^^^^^^^^
+ 204 |     expect(onResetConfig).toHaveBeenCalledWith(item.id);
+     `----
+  help: If this short-circuits with 'undefined' the evaluation will throw TypeError
+
+  ! eslint-plugin-unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+     ,-[packages/ui/src/settings/RemotePluginSyncDialog.tsx:340:19]
+ 339 |     configuredOptions: { ...configuredOptions },
+ 340 |     userConfig: { ...(plugin?.userConfig ?? {}) },
+     :                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 341 |   };
+     `----
+  help: Spreading falsy values in object literals won't add any unexpected properties, so it's unnecessary to add an empty object as fallback.
+
+  ! eslint-plugin-unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary
+     ,-[packages/ui/src/settings/RemotePluginSyncDialog.tsx:736:5]
+ 735 |   const mergedOptions = {
+ 736 |     ...(remotePlugin.configuredOptions ?? {}),
+     :     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 737 |     ...plan.options,
+     `----
+  help: Spreading falsy values in object literals won't add any unexpected properties, so it's unnecessary to add an empty object as fallback.
+
+  ! eslint(no-unused-vars): Identifier 'INITIAL_PANE_LAYOUT' is imported but never used.
+    ,-[packages/ui/src/root/useRootWorkspaceActions.ts:41:3]
+ 40 |   hadPersistedPaneLayoutAtModuleLoad,
+ 41 |   INITIAL_PANE_LAYOUT,
+    :   ^^^^^^^^^|^^^^^^^^^
+    :            `-- 'INITIAL_PANE_LAYOUT' is imported here
+ 42 |   usePaneLayoutStore,
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'waitFor' is imported but never used.
+   ,-[packages/ui/test/chatWorkspaceDeviceNames.test.ts:3:54]
+ 2 | import { createElement } from "react";
+ 3 | import { cleanup, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
+   :                                                      ^^^|^^^
+   :                                                         `-- 'waitFor' is imported here
+ 4 | import { afterEach, expect, it, vi } from "vitest";
+   `----
+  help: Consider removing this import.
+
+  ! eslint(max-lines): File has too many lines (2056).
+      ,-[packages/ui/src/remote-connection-flow/index.ts:2184:2]
+ 2183 |   };
+ 2184 | }
+      :   ^
+      `----
+  help: Maximum allowed is 800.
+
+  ! eslint(no-unused-vars): Identifier 'useRef' is imported but never used.
+   ,-[packages/ui/src/settings/AutomationsSection.tsx:7:3]
+ 6 |   useMemo,
+ 7 |   useRef,
+   :   ^^^|^^
+   :      `-- 'useRef' is imported here
+ 8 |   useState,
+   `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Parameter 'isUnavailable' is declared but never used. Unused parameters should start with a '_'.
+     ,-[packages/ui/src/settings/model-provider-section/StatusCards.tsx:677:3]
+ 676 |   isPurchased,
+ 677 |   isUnavailable = false,
+     :   ^^^^^^|^^^^^^
+     :         `-- 'isUnavailable' is declared here
+ 678 |   isStartPlanProvider,
+     `----
+  help: Consider removing this parameter.
+
+  ! eslint(no-unused-vars): Identifier 'lazy' is imported but never used.
+    ,-[packages/ui/src/Root.tsx:19:10]
+ 18 | } from "@/request-security-edition/index.js";
+ 19 | import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+    :          ^^|^
+    :            `-- 'lazy' is imported here
+ 20 | import { LucideProvider, RefreshCw } from "lucide-react";
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Identifier 'Suspense' is imported but never used.
+    ,-[packages/ui/src/Root.tsx:19:16]
+ 18 | } from "@/request-security-edition/index.js";
+ 19 | import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+    :                ^^^^|^^^
+    :                    `-- 'Suspense' is imported here
+ 20 | import { LucideProvider, RefreshCw } from "lucide-react";
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Type 'WorkspaceTabState' is imported but never used.
+    ,-[packages/ui/src/Root.tsx:66:46]
+ 65 | import { TabStoreProvider, useTabStore, useTabStoreApi } from "@/store/TabStoreProvider.js";
+ 66 | import { isSettingsTab, isWorkspaceTab, type WorkspaceTabState } from "@/store/tabStore.js";
+    :                                              ^^^^^^^^|^^^^^^^^
+    :                                                      `-- 'WorkspaceTabState' is imported here
+ 67 | import { logger } from "@/logger.js";
+    `----
+  help: Consider removing this import.
+
+  ! eslint(no-unused-vars): Variable 'webRemoteControlSessionActive' is declared but never used. Unused variables should start with a '_'.
+     ,-[packages/ui/src/Root.tsx:537:9]
+ 536 |   });
+ 537 |   const webRemoteControlSessionActive =
+     :         ^^^^^^^^^^^^^^|^^^^^^^^^^^^^^
+     :                       `-- 'webRemoteControlSessionActive' is declared here
+ 538 |     webRemoteControlStatus.status === "running" || webRemoteControlStatus.status === "active";
+     `----
+  help: Consider removing this declaration.
+
+  ! eslint-plugin-unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily.
+     ,-[packages/ui/src/project-sidebar/useProjectUnreadSignals.ts:131:35]
+ 130 |     const clearOnFocus = () => {
+ 131 |       for (const [key, entry] of [...foregroundCompletions]) {
+     :                                   ^^^
+ 132 |         // 只清「已补写且用户回到窗口时任务仍在面前」的记录；
+     `----
+  help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+
+  ! eslint(no-unused-vars): Variable 'msg' is declared but never used. Unused variables should start with a '_'.
+     ,-[packages/ui/src/project-sidebar/index.tsx:130:9]
+ 129 |   );
+ 130 |   const msg = (id: string) => intl.formatMessage({ id: `project.${id}` });
+     :         ^|^
+     :          `-- 'msg' is declared here
+ 131 |   const start = async (projectId?: string, hostId?: string, taskGroupId?: string | null) => {
+     `----
+  help: Consider removing this declaration.
+
+Found 96 warnings and 0 errors.
+Finished in 245ms on 6741 files using 20 threads.

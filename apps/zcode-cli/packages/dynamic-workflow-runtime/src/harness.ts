@@ -227,6 +227,7 @@ export async function runWorkflowScript(options: RunWorkflowOptions): Promise<Ru
     askMutating: (instance) => engine.askMutating(instance),
     concurrencyChanged: (change) => engine.concurrencyChanged(change),
     runStalled: (info) => engine.runStalled(info),
+    askStalled: (instance, info) => engine.askStalled(instance, info),
   };
   const driver = options.makeDriver(sink);
   engine = new WorkflowEngine({

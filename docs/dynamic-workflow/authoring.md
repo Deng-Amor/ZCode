@@ -1425,3 +1425,7 @@ The predecessor keeps its own figure; it is the successor that reports the whole
   their own quota.
 - A `select` over several channels, and a `receive()` that yields one item outside a loop.
 - Drawing a channel as a relay node once the graph vocabulary can grow.
+
+### Isolating exhausted model recovery
+
+An ask may reject with RecoveryExhausted after finite model recovery ends. Catch that ask locally, or use Promise.allSettled and await independent siblings, when partial results are useful. A top-level uncaught rejection still fails the run. Do not automatically rerun an ask with unknown external effects; completed results remain in the journal, and cancellation is not evidence that an external operation was rolled back.

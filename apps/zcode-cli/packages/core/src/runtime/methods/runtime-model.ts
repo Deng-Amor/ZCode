@@ -74,17 +74,6 @@ function withRuntimeInvocationLayer(
   };
   return withModelInvocationContext(model, () => ({
     ...layer,
-    // 总控进入标准上下文后，压缩和工具内部请求也可能携带正文；统一在模型句柄保护诊断。
-    ...(runtime.config.globalSystemPrompt?.trim()
-      ? {
-          metadata: {
-            ...getCurrentModelInvocationContext()?.metadata,
-            confidentialController: true,
-            startupGlobalSystemPrompt: true,
-            skipTranscript: true,
-          },
-        }
-      : {}),
   }));
 }
 

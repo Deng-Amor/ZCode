@@ -1,3 +1,4 @@
+// OAuth 登录及历史深链仍使用官方约定的 zcode 协议；CCode 只复用同一套路由。
 const DEEP_LINK_SCHEME = "zcode";
 const DEEP_LINK_RE = /\bzcode:(?:\/\/|\/)?[^\s"'<>]+/i;
 const OAUTH_CALLBACK_HOSTS = new Set(["oauth"]);

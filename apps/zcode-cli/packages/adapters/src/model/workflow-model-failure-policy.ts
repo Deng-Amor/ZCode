@@ -3,20 +3,18 @@
  *
  * 分类器（failure-classifier.ts）回答的是「主对话要不要自动重试」；这张表回答的是
  * 「workflow 要不要停下来找人」。两张表在 3008/3009/3010（并发上限）上答案相反，这正是
- * 本模块存在的理由：workflow 子代理与工具侧请求持有无上限重试预算（`modelRetryBudget`），
+ * 本模块存在的理由：workflow 子代理与工具侧请求持有专用重试预算（`modelRetryBudget`），
  * 在它们身上，只有**确定性的、需要人来解决的**错误才值得停下 run；其余一切（含分类器判
- * 不可重试的未知业务码、TLS、5xx）一律在内重试，靠 stall 通知做逃生口。
+ * 不可重试的未知业务码、TLS、5xx）按请求预算在内重试；分类与次数上限相互独立。
  *
  * runner（attempt 循环的重试闸门）与 bootstrap driver（把 reject 归成 stopRun / askFailed）
  * 共用**同一个**函数：runner 判 retry 的失败绝不会以 stop 到 driver；runner 判 stop 的失败
  * 到 driver 时策略表必判 stop（同一函数、同一输入）。
  */
 
-import { ModelErrorCode, ModelFailureReason } from "@zcode/contracts";
+import { ModelErrorCode, ModelFailureReason, ModelRetryBudget } from "@zcode/contracts";
 import type { ClassifiedModelFailure } from "./failure-classifier.js";
 import { isRetryableFailure } from "./failure-classifier.js";
-import type { ModelRetryBudget } from "@zcode/contracts";
-import { isUnboundedRetryBudget } from "./retry-budget.js";
 
 /** `ProviderStop` 的判定键：通知文案表按它选句子（不是按 reason）。 */
 export type WorkflowProviderStopKind =
@@ -107,8 +105,8 @@ export function resolveWorkflowModelFailurePolicy(
 }
 
 /**
- * runner 重试闸门的替换点：有界预算照旧读分类器的 `retryable`（主对话一字不动）；无上限
- * 预算（workflow 流量）改读策略表——`retry` 即可重试，`stop` / `context_exceeded` 不重试。
+ * runner 重试闸门的替换点：default / single-attempt 照旧读分类器的 `retryable`；
+ * workflow-finite / unbounded 读 workflow 策略表，次数上限另由 retry-budget 闸门约束。
  * 取消由调用方在此之前单独短路（两处 runner 都已如此）。
  */
 export function retryAllowedByFailurePolicy(
@@ -116,7 +114,13 @@ export function retryAllowedByFailurePolicy(
   retryBudget: ModelRetryBudget | undefined,
   providerCode: string | undefined,
 ): boolean {
-  if (!isUnboundedRetryBudget(retryBudget)) return isRetryableFailure(failure);
+  // 有限 workflow 只收紧次数，不能退回主会话分类而跳过并发上限等可恢复错误。
+  if (
+    retryBudget !== ModelRetryBudget.WorkflowFinite &&
+    retryBudget !== ModelRetryBudget.Unbounded
+  ) {
+    return isRetryableFailure(failure);
+  }
   return resolveWorkflowModelFailurePolicy(failure, providerCode).decision === "retry";
 }
 

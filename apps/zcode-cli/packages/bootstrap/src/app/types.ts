@@ -1,4 +1,5 @@
 import type { AiSdkModelAdapter } from "@zcode/adapters/model";
+import type { ExpertSkillCatalogPort, ExpertSkillLoadedContent } from "@zcode/adapters/expert-skills";
 import type {
   AgentTelemetryRuntimeOwner,
   AutomationPort,
@@ -135,6 +136,8 @@ export type RevokeWorkspaceHookTrustInput =
 export type ZCodeAppRuntimeConfigInput = AgentRuntimeConfig;
 
 export interface ZCodeAppOptions {
+  expertSkills?: { catalog: ExpertSkillCatalogPort; content: { load(skillId: string): Promise<ExpertSkillLoadedContent> } };
+  confidentialControllerLockedContent?: { load(): Promise<{ version: number; digest: string; skillMd: string; files: readonly { path: string; bytes: Uint8Array }[] }> };
   /** 独立 CLI 的配置菜单编辑输入默认值；其他装配保留显式 Session 配置语义。 */
   modelSelectionMode?: "cli-default";
   /** Host 在运行实例创建时传入，运行中不刷新。 */
@@ -211,6 +214,8 @@ export interface ZCodeAppOptions {
   uiDetectedLocale?: string | null;
   uiLocale?: UiLocale;
   onWorkflowEvent?: (event: WorkflowEvent) => void | Promise<void>;
+  /** protocol 原 record 的同步 store 后接单；不返回投影提交 Promise。 */
+  onWorkflowHostObservationStored?: (storedEvent: SessionEvent) => void;
   automationPort?: AutomationPort;
   offPeakPort?: OffPeakPort;
   topicResourcePort?: TopicResourcePort;
@@ -837,8 +842,6 @@ export interface ResolveLatestSessionOptions {
 }
 
 export interface RunZCodeProtocolAgentOptions {
-  /** Trusted startup configuration; never persisted as session persona. */
-  globalSystemPrompt?: string;
   createConfidentialControllerScope?: ZCodeAppOptions["createConfidentialControllerScope"];
   /** 入口拥有退出时限；bootstrap 只编排取消和资源清理，不直接退出进程。 */
   lifecycle?: {

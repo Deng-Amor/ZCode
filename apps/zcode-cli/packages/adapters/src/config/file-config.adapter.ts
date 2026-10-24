@@ -59,7 +59,11 @@ export interface PluginRemovePatchResult {
 }
 
 const DEFAULT_CONFIG_FILE = "config.json";
-const DEFAULT_BASE_DIR = "~/.zcode/cli";
+// 桌面品牌实例不能加载原版 CLI 配置（其中可能含模型凭据）；独立 CLI 保持原有默认路径。
+const desktopHome = process.env.ZCODE_DESKTOP_HOME_DIR?.trim();
+const DEFAULT_BASE_DIR = desktopHome
+  ? join(process.env.ZCODE_DATA_BASE_DIR?.trim() || desktopHome, ".zcode", "cli")
+  : "~/.zcode/cli";
 
 /**
  * Resolve path with ~ expansion

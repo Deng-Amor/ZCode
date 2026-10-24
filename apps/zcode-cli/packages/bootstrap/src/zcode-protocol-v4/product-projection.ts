@@ -526,6 +526,22 @@ export class ProductProjection {
     return this.snapshot;
   }
 
+  /** strict 重建不能复用旧 transport 前缀；只提升候选水位，不伪造业务事件或初始化事实。 */
+  advanceRecoveryBoundary(minimumSeq: number, minimumRevision: number): void {
+    if (
+      ![this.snapshot.seq, this.snapshot.revision, minimumSeq, minimumRevision].every(
+        (value) => Number.isSafeInteger(value) && value >= 0,
+      )
+    ) {
+      throw new RangeError("invalid recovery boundary");
+    }
+    this.snapshot = {
+      ...this.snapshot,
+      seq: Math.max(this.snapshot.seq, minimumSeq),
+      revision: Math.max(this.snapshot.revision, minimumRevision),
+    };
+  }
+
   /** 生命周期状态独立于 run phase；更新必须推进水位，避免旧 base 漏掉门禁。 */
   setRuntimeInitialization(
     state: NonNullable<ConversationSnapshot["runtimeInitialization"]>,

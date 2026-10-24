@@ -3,23 +3,24 @@
  * 它的可序列化形态，以及跨 Boundary A 抛出的 {@link WorkflowError} 本身。
  *
  * 独立成文件的理由与 run-terminal.ts 同一条：types.ts 已抵 oxlint 的 400 行门，而这一族
- * 高度自足——它只依赖 schema 的 `Violation` 与终态明细，不依赖词汇表里的任何别的东西。
+ * 高度自足——仅以类型依赖 schema、终态明细与节点身份，恢复判定也不执行 IO。
  * 消费者按惯例仍从 types.ts 取（那边原样再导出），导入路径因此一处都不必改。
  */
 
 import type { Violation } from "../schema/types.js";
 import type { ProviderStopDetails } from "./run-terminal.js";
+import type { InstanceRef, NodeRecord } from "./types.js";
 
 /**
  * 稳定错误码。区分 node 级（拒绝单个 ask 的 promise）与 run 级（使整个 run 失败）：
- * - node 级：ValidationFailed / ResultNotSubmitted / DriverError / Cancelled / ContextLimit /
+ * - node 级：ValidationFailed / ResultNotSubmitted / DriverError / Cancelled / ContextLimit / RecoveryExhausted /
  *   WorldReadCapExceeded——一次世界读取超过它那个 op 的上限（`files.grep`：2000 条命中或
  *   256KB 序列化，先到先拒；`git.diff`：512KB；见 `facade/world-read-caps.ts`）。它是 node 级
  *   而不是 run 级，靠的是**拒绝通道**而不是严重程度：世界读取返回一个脚本能 `catch` 的
  *   promise，所以"缩窄 pattern 或加个 glob"是一条脚本真能走的路。也刻意**不**折进
  *   DriverError——上限是脚本可以据以重写自己的契约，而靠匹配 message 文本区分两者，
  *   正是这个联合类型存在的目的所要防的。
- * - run 级：InputHashMismatch / UnknownActor / MissingAskSpec /
+ * - run 级：RecoveryUncertain / InputHashMismatch / UnknownActor / MissingAskSpec /
  *   DuplicateActorName——同一个 run 内两次 createActor 得到相同的**非空**有效名
  *   （有效名 = normalizePersona 后的 `spec.name`，persona.name 压过 name 实参）。规则对
  *   **所有** run 生效而不只是修订 run：具名 actor 是 amend-resume 缓存导入的身份键，而任何
@@ -51,6 +52,8 @@ export type WorkflowErrorCode =
   | "WorldReadCapExceeded"
   | "Cancelled"
   | "ContextLimit"
+  | "RecoveryExhausted"
+  | "RecoveryUncertain"
   | "ReportCapExceeded"
   | "InputHashMismatch"
   | "UnknownActor"
@@ -153,4 +156,29 @@ export class WorkflowError extends Error {
       providerStop: json.providerStop,
     });
   }
+}
+
+/** 旧 running 效果没有可信结果；只读选择稳定的首个实例，不改写节点事实。 */
+export function findUncertainWorldRun(
+  nodes: readonly Pick<NodeRecord, "kind" | "status" | "siteId" | "ordinal">[],
+): InstanceRef | undefined {
+  let first: InstanceRef | undefined;
+  for (const node of nodes) {
+    if (node.kind !== "world-run" || node.status !== "running") continue;
+    if (
+      first === undefined ||
+      node.siteId < first.siteId ||
+      (node.siteId === first.siteId && node.ordinal < first.ordinal)
+    ) {
+      first = { siteId: node.siteId, ordinal: node.ordinal };
+    }
+  }
+  return first;
+}
+
+export function createRecoveryUncertainError(runId: string, instance: InstanceRef): WorkflowError {
+  return new WorkflowError(
+    "RecoveryUncertain",
+    `Run ${runId}, instance ${instance.siteId}:${instance.ordinal} has an unknown external effect result; verify what happened before recovery.`,
+  );
 }

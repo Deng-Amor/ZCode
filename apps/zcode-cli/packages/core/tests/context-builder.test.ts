@@ -5,6 +5,7 @@ import { createContextBuilder } from "../src/context/index.js";
 import { createTestRuntimeModel } from "./test-runtime-model.js";
 
 import { buildMemorySection } from "../src/context/sections/memory.js";
+import { buildDesktopContextSection } from "../src/context/sections/desktop.js";
 import {
   buildCliPrefixSection,
   buildEnvInfoSection,
@@ -22,6 +23,16 @@ const contextTestModel = createTestRuntimeModel({
   generateText: async () => {
     throw new Error("context rendering must not execute the model");
   },
+});
+
+describe("CCode desktop identity", () => {
+  it("preserves ZCode when explaining the relationship between the products", () => {
+    const content = buildDesktopContextSection().content;
+
+    expect(content).toContain("relationship between CCode and ZCode");
+    expect(content).toContain("preserve both names");
+    expect(content).not.toContain("replace all ZCode with CCode");
+  });
 });
 
 const DEFAULT_COMMUNICATION_PROMPT =
@@ -71,7 +82,10 @@ function metaAttachment(
 function memoryFixture(
   name: "main-memory-default-index.md" | "main-memory-index.md" | "main-memory-semantic-recall.md",
 ): string {
-  const content = readFileSync(new URL(`./fixtures/memory/${name}`, import.meta.url), "utf8");
+  const content = readFileSync(new URL(`./fixtures/memory/${name}`, import.meta.url), "utf8").replace(
+    /\r\n/g,
+    "\n",
+  );
   return content.endsWith("\n") ? content.slice(0, -1) : content;
 }
 
@@ -1471,7 +1485,6 @@ describe("startup global system prompt", () => {
   ])("adds the private global section without replacing persona %j", (persona) => {
     const result = createContextBuilder({
       workingDirectory: "/workspace",
-      globalSystemPrompt: "GLOBAL_CONTROLLER_SENTINEL",
       envInfo: {
         cwd: "/workspace",
         platform: "linux",
@@ -1482,15 +1495,12 @@ describe("startup global system prompt", () => {
       ...persona,
     }).build();
     const systems = result.systemMessages.map((message) => String(message.content)).join("\n");
-    expect(systems).toContain("GLOBAL_CONTROLLER_SENTINEL");
+    expect(systems).not.toContain("GLOBAL_CONTROLLER_SENTINEL");
     if ("customSystemPrompt" in persona) expect(systems).toContain("LOCAL_PERSONA");
     if ("workflowActor" in persona) expect(systems).toContain("ACTOR_PERSONA");
     expect(result.metaUserAttachments.map((item) => item.content).join("\n")).not.toContain(
       "GLOBAL_CONTROLLER_SENTINEL",
     );
-    expect(
-      result.sections.find((section) => section.source === "global_system_prompt")?.preview,
-    ).not.toContain("GLOBAL_CONTROLLER_SENTINEL");
   });
 });
 

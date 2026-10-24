@@ -368,7 +368,8 @@ export function createSettingServiceWithMigrations(): {
 
     async updateDataBaseDir(newDir: string | undefined): Promise<void> {
       const currentBaseDir = getDataBaseDir();
-      const targetBaseDir = newDir?.trim() || homedir();
+      // 清除自定义数据目录时回到当前实例的默认目录，不能逃回原版用户目录。
+      const targetBaseDir = newDir?.trim() || resolveUserHomeDir();
       const validation = validateDataBaseDirTarget(targetBaseDir);
       if (!validation.ok) {
         // Windows 安装目录由安装器/自动更新管理，把 .zcode/v2 放进去可能在升级时被覆盖。

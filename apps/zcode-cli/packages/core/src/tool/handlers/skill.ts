@@ -13,7 +13,7 @@ import {
   isConfidentialControllerSkill,
   type SkillRuntimeInput,
 } from "@zcode/contracts";
-import type { ToolEntry, ToolHandler } from "../types.js";
+import type { ToolEntry, ToolExecutionContext, ToolHandler } from "../types.js";
 
 /** 技能正文的默认字节上限；超出部分由 adapter 从尾部截掉。 */
 export const MAX_SKILL_BYTES = 100_000;
@@ -39,10 +39,13 @@ export const skillHandler: ToolHandler = async (input, context) => {
   const { skill } = SkillInputSchema.parse(input) as SkillRuntimeInput;
   if (isConfidentialControllerSkill(skill)) {
     try {
-      // 私有通道未装配也必须拒绝，不能回退到旧的本地总控正文。
-      if (!context.activateConfidentialController) throw new Error('UNAVAILABLE');
-      await context.activateConfidentialController(context.abortSignal);
-      return '任务总控已启用。内部规则由运行时提供，无需读取或展示技能文件。';
+      if (!context.skillPort) throw new Error('UNAVAILABLE');
+      // 锁定端口已在存储层完成 digest 复核；按 spec §5.6-1 信任其保留身份并跳过别名二次拦截。
+      const loaded = await context.skillPort.loadSkill({
+        name: skill, workingDirectory: context.workingDirectory, maxBytes: skillMaxBytes(skill),
+        trace: { traceId: context.traceId, spanId: context.spanId, parentSpanId: context.parentSpanId, sessionId: context.sessionId, turnId: context.turnId },
+      }, { signal: context.abortSignal });
+      return formatSkillContent(loaded, context);
     } catch {
       throw createCoreError(CoreErrorType.ConfigurationError, '任务总控暂不可用，请检查登录与授权。', { recoverable: true });
     }
@@ -85,13 +88,16 @@ export const skillHandler: ToolHandler = async (input, context) => {
     throw createCoreError(CoreErrorType.ConfigurationError, '任务总控暂不可用，请检查登录与授权。', { recoverable: true });
   }
 
+  return formatSkillContent(loaded, context);
+};
+
+function formatSkillContent(loaded: Awaited<ReturnType<NonNullable<ToolExecutionContext['skillPort']>['loadSkill']>>, context: ToolExecutionContext): string {
   context.recordSkillTelemetryMetadata?.({
     name: loaded.metadata.name,
     ...(loaded.metadata.qualifiedName ? { qualifiedName: loaded.metadata.qualifiedName } : {}),
     ...(loaded.metadata.pluginId ? { pluginId: loaded.metadata.pluginId } : {}),
     source: loaded.metadata.source,
   });
-
   return [
     `<skill_content name="${loaded.metadata.name}">`,
     `# Skill: ${loaded.metadata.name}`,
@@ -105,7 +111,7 @@ export const skillHandler: ToolHandler = async (input, context) => {
   ]
     .filter((line) => line.length > 0)
     .join("\n");
-};
+}
 
 function expandSkillContextVariables(content: string, baseDirectory: string): string {
   // 只有 Skill 工具加载后才有明确的当前 skill 目录，因此变量替换限定在这里完成。
@@ -132,7 +138,7 @@ Important:
 - When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response about the task
 - NEVER mention a skill without actually calling this tool
 - Do not invoke a skill that is already running
-- Exception: activate 总控派单 again at the start of each new work request, even if earlier history contains its activation confirmation. It returns authorization confirmation only; do not read or request an internal skill file. Ordinary chat does not require activation.
+- Exception: call 总控派单 at the start of each new work request, including requests to execute, continue, deliver work, or modify files. It returns the complete internal rules through the locked skill body; ordinary chat, greetings, concept explanations, and idea discussions do not require loading it.
 - Do not use this tool for built-in CLI commands (like /help, /clear, etc.)
 - If you see a <command-name> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again
 `,

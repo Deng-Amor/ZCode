@@ -108,8 +108,8 @@ export async function* runStreamText(input: {
   streamIdleTimeoutMs: number;
   modelIoFullRetentionEnabled: boolean;
 }): AsyncGenerator<ModelStreamEvent> {
-  // 重试预算档位：只放宽瞬态失败的放弃条件；
-  // `emittedRetryBoundaryEvent` 之后不重试的规则不变。状态事件 maxAttempts 以 0 表示无上限。
+  // 工作流默认使用有限预算，显式 unbounded 才不限制重试次数；
+  // `emittedRetryBoundaryEvent` 之后不重试的规则不变，只有无上限档位的状态 maxAttempts 为 0。
   const retryBudget = input.request.modelRetryBudget;
   const statusMaxAttempts = (extraAttempts: number): number =>
     retryBudgetMaxAttempts(retryBudget, input.retry.maxAttempts + extraAttempts);
@@ -1526,7 +1526,7 @@ function canRetryStreamFailure(input: {
   retryBudget?: ModelRetryBudget;
   streamFailurePhase?: StreamFailurePhase;
 }): boolean {
-  // workflow 流量（无上限预算）不读分类器的 retryable，读策略表：只有确定性的模型侧错误
+  // workflow-finite 与 unbounded 都读工作流策略表，不读分类器的 retryable；确定性的模型侧错误
   // 才不重试；3008/3009/3010 这类并发上限在这里是 retry。
   const providerCode = inspectProviderFailure(input.error).providerErrorCode;
   // 可见输出已发出后绝不重放（交给 core 的 stream recovery）；预算门在 unbounded 下恒开。

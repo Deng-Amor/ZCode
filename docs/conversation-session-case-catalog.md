@@ -1,5 +1,73 @@
 # Conversation Session Case Catalog
 
+## E2E1-P2 真实桌面恢复拒绝（2026-10-21 accepted / pending）
+
+本组沿[恢复保护 spec](specs/workflow-uncertain-recovery.md)登记已审的 desktop-local 真实 UI 验收；**已完成本次 synthetic-history GUI 验收，保持 pending**。三个逻辑步骤共用一个 pending spec：`packages/desktop/test/e2e/conversation-session/manual-review/pending/conversation-session-workflow-recovery-uncertain.test.ts`。本组承担任务导航、工具摘要卡、侧板和 Resume 按钮路径，不由 P1 renderer 或 B 进程内协议结果替代。
+
+| Case | Setup → action → assertions | 层级 / 当前状态 |
+| --- | --- | --- |
+| E2E1-P2-HOT | 私有双索引中合法父任务的 stopped/interrupted 合成历史，completed world#1 带结果、running world#2 无结果 → 真实任务/工具摘要卡进入侧板并点击 Resume → 捕捉真实拒绝提示；只读核 run 为 failed/RecoveryUncertain（UI 投影 errored）、completed 结果及 unknown running 节点不变，无替代 run、无新增 actor/相关 session/journal event；本 case provider 请求为 0 | accepted / pending；本次 desktop-local synthetic-history 热拒绝通过，真实按钮提示、active pane 终态与只读持久事实一致，provider capture 为 0；未捕获 raw ACK 对象 |
+| E2E1-P2-RESUBSCRIBE | 热拒绝后离开父任务并释放其所有 pane/订阅 lease → 观察 keep_warm_expired、unsubscribe.completed，再返回同任务建立新 subscriptionId → 真实卡/侧板展示 errored、无旧 resumable/stopReason 和未知效果错误正文 | accepted / pending；本次同进程真实重订阅通过：refCount=0、keep_warm_expired、旧订阅 completed、新 subscriptionId acknowledged/activated 均有原日志；未捕获 raw snapshot |
+| E2E1-P2-COLD | 同一私有 HOME/userData、同父任务/run → 通过现有保 profile 重启 helper 等待旧 Electron/Host/CLI 进程树退出，再启动新 Electron PID → 同任务/侧板冷读仍为 errored/RecoveryUncertain，unknown 节点及 completed 结果保留，seed invocation=1 | accepted / pending；本次新进程冷读通过：旧进程树退出屏障、新 PID、同 HOME/userData、seedCount=1；hot/cold 只读事实完全一致 |
+
+2026-10-21 Windows desktop-local 实跑：`wf5-ui-b20770de91a8418faa7294efa40201cb`，单个物理 spec 内 HOT / RESUBSCRIBE / COLD 三个逻辑步骤通过（1/1 test，exit 0，无重试）；生命周期仍为 manual-review/pending，不计入正式 suite 通过数。命令（隔离工作树根目录，需配套私有 HOME/profile 与 runner 环境）：`pnpm --filter @zcode/desktop test:e2e -- --spec ./test/e2e/conversation-session/manual-review/pending/conversation-session-workflow-recovery-uncertain.test.ts`。本次交接证据：`p2-verification/gui-active-pane.command.json`、`e2e-runs/wf5-ui-b20770de91a8418faa7294efa40201cb/workflow-recovery-evidence.json`、同目录 `artifacts/summary.json`、原始桌面日志、provider capture 和三张截图；独立验收见 `p2-gui-acceptance.md`。仅本次运行通过，不抹除此前修复阶段的失败，也不外推稳定性。
+
+fixture 明确标记 synthetic-history：不声称来自真实 CTRL 授权执行、真实强杀或掉电，不证明成功恢复执行/inputHash 兼容。离线 seed 仅在 Electron 启动前使用公开 store/journal 并关闭；运行期 inspect 仅针对本 case 私有 DB 使用 readOnly 参数化窄 SELECT，禁止迁移、补 seed 或读取 controller 表/凭据。保留生产授权/owner/private-channel 边界；未知效果拒绝位于 prepareController 前，不能注入假授权、重放未知 world、修改 UI store 或新增生产 probe。零 provider 请求不能单独证明授权方法从未被调用。
+
+P2 私有 HOME 由 launcher 在 `onPrepare` 首项认领：先验证 HOME 不存在、独立 artifacts 计划与所有祖先路径，再以 `wx` 写入 runRoot 内绑定 home/runRoot/runId/artifacts 的 owner。后续平台准备允许创建本轮 HOME/AppData；worker 在任何 reset 删除前重验 owner/路径并取得一次性 reset claim，reset 成功后写完成标记，离线 seed 在首个 DB 写入前取得一次性 seed claim。旧 HOME、重复 launcher/reset/seed、owner 或计划错配以及 junction 均拒绝并保留现场；cold reload 不重新认领、重置或 seed。该时序恢复原隔离合同，不构成 GUI 通过证据。
+
+pending 物理路径用于规范化后的精确 seed 匹配；fixture metadata 的 canonical formal target 为 `./test/e2e/conversation-session/conversation-session-workflow-recovery-uncertain.test.ts`，不得混用。零请求 manifest/provider 合同保持 requests/fixtures 为空。测试自有进程、订阅、只读连接和私有目录须清理；不 promotion/admit、不扩手机/跨 Host、真实新执行/CTRL、强杀/掉电或 24h 验收。既有 P1/B 记录保持原证据层级。
+
+## E2E1-P2-B 宿主观察故障恢复（accepted/planned）
+
+以[恢复保护spec](specs/workflow-uncertain-recovery.md)的P2-B合同为准；设计已独立批准进入spec/plan，以下语义accepted，**尚未实现/执行**。host观察由真实lifecycle拒绝链产生；纯校验/非法输入单测可用显式输入，但联合验收不得直接塞errored snapshot或手调publisher制造成功。journal/lifecycle仍唯一业务owner，观察恢复零world/abort/amend重执行。
+
+| Case | Setup / action（故障切点） | Assertions / evidence requirement |
+| --- | --- | --- |
+| E2E1-P2-B01 | 第一次 append 在入 store 前 settled reject，第二次成功 | 同 id、两次串行尝试、一条真实 raw event；无 world/abort/amend 重执行 |
+| E2E1-P2-B02 | store 已写入但 append settle reject；以及 store fulfill 后 usage/notify/tail reject | 前者精确查同 id 后立即交接，后者 store-stage 已交接；均零二次 append/不重播全部 sinks，最终 commit或明确同步失败 |
+| E2E1-P2-B03 | 两次 append 均 settled reject/lookup reject/同 id 冲突 | 明确安全失败；无第三次，无假 commit |
+| E2E1-P2-B04 | store append Promise 未 settle；或 settled reject 后 identity lookup 未 settle | 仅一个未知操作，不盲重试；不得声称整个 recorder/store IO 有界或成功；关闭后迟到 callback不落新实例；与 B21的已存储fanout挂起分开 |
+| E2E1-P2-B05 | runtime notify 未调用订阅、订阅未安装；或 onSessionEvent 的 persistence/debug 抛错 | stored hook 补交同事件；完整 callback 边界捕获；非业务重做 |
+| E2E1-P2-B06 | ingest 不 throw 但 apply failure/oversize，或 raw gap | actual proof 不提前成功；唯一 strict 或明确 failure；generic applied/seen 不能伪绿 |
+| E2E1-P2-B07 | 第一次 publisher apply 抛错，strict 成功 | 同 event strict replay有实际 admission；errored/RecoveryUncertain、无旧 resumable；未知节点保留 |
+| E2E1-P2-B08 | target raw 缺失、foreign、非法 source、重复 id、仅 journal 合成同形 | 不执行 strict 或不 adopt，明确 identity failure |
+| E2E1-P2-B09 | 普通旧 flight 在等候，期间又请求 normal hydration；旧 flight reject | strict 不复用普通成功冒充；只有一个 session flight/adopt；剩余预算内可执行唯一 strict |
+| E2E1-P2-B10 | strict 各层 load、sessionEntries、replay、usage/subagent/artifact seed reject | strict 不吞错误/空回退；原投影和订阅仍在；无半 adopt |
+| E2E1-P2-B11 | oldFlight/load/seed 分别挂起超过 job 总 deadline，再释放 | 一次终结、waiter/timer/listener 清理；迟到 strict 零 adopt/flush/标记写 |
+| E2E1-P2-B12 | strict await 中 close/dispose/同 sessionId 换 record | 原 owner 作废；旧 callback/候选不污染新 publisher/raw state/hydrated 标志 |
+| E2E1-P2-B13 | 同event订阅+hook并发及重复投递；strict成功后job finally再交接；永久失败后重复 | 一job/一次strict；读取同event/generation真实元数据：未用strict=false，strict成功后重复已commit快返仍true；永久失败重复保留原reason/strictAttempted且零新strict；adapter无第二attempt owner |
+| E2E1-P2-B14 | 同 run 不同 eventId 并发、后来真实进展先到 | 身份不串、各自应用证明；不把较新状态回滚 |
+| E2E1-P2-B15 | strict 后迟到同 raw event、补齐前序 gap、继续发送下一 raw | 无二次 append/reducer；raw cursor 连续推进不永久卡住 |
+| E2E1-P2-B16 | 其它 TurnStarted 已由 generic abort/timeout 固化失败且出现在 loaded/events与live tail，然后 host strict | loaded replay输入与tail drain均排除其admission，不能仅最后复制map；failure保护不迟到复活；原 generic applied/pre-abort/abort-after-register/timeout用例仍符合当前合同 |
+| E2E1-P2-B17 | publisher commit 后 notify/emit 一次故障 | projection_success 与 delivery_fault 区分；既有 resync 恢复，不再 append/strict/业务写 |
+| E2E1-P2-B18 | 两 profile 既有连接 live恢复 + 断线旧 base resume | desktop continuous 和 web replayable 都用真实编码帧经客户端 reducer apply，最后 UI终态正确，订阅归属/epoch/ack不破坏 |
+| E2E1-P2-B19 | sink/logger/onError 异常包含敏感哨兵 | 本新增诊断无 raw message/payload泄漏；Promise 均 catch，资源均清理 |
+| E2E1-P2-B20 | 正常 Engine/TUI、权限 commit、普通 cold hydration/oversize/reservation | 行为不因 B host 专用边界变化；不扩大 permission allowlist |
+| E2E1-P2-B21 | **真实 InMemorySessionEventStore**，真实 host拒绝链；在protocol订阅前安装返回deferred Promise的普通sink | deferred释放前store已有一条带正常raw seq的事件、同步hook已接单/启动deadline，adapter已完成commit或唯一strict；append次数1，业务零重执行；不能靠stub append立即返回或手塞snapshot伪绿 |
+| E2E1-P2-B22 | B21 job接管后close或同sessionId换record，再释放前置sink，使旧protocol callback迟到 | 旧callback只检查原owner并终结/无效，不重复append/strict、不查新record接续；新publisher/raw state/订阅/终结日志不被污染；旧job资源已清理 |
+| E2E1-P2-B23 | **三组独立注入**：①hook在接单前同步throw；②正常hook+合法toolCallId；③正常hook已接单后registry等usage前置依赖reject | ①仅要求安全失败、普通fanout继续，不要求adapter已接管；②host带toolCallId仍零usage upsert；③job在tail故障前已接管并独立推进，已存储证据不被抹去、零重append；三组均保留legacy顺序 |
+
+维度/剪枝：store未settle与已settle、reject-absent/reject-present、正常/throw/永久pending fanout、同event/不同event、原record/替换record、normal/strict flight及两delivery profile均accepted。theme/locale/窄屏无B新增分支，复用P1；provider/世界效果类型不改变观察身份，以driver/actor/model/效果调用零约束剪枝。无force/确认重放/新工具schema，无outbox/周期轮询、新mobile runtime；lookup未知保持未完成而不是盲重试。永久失败只指同record/generation不再主动strict。
+
+E2E交接：B18先验真实编码wire经client reducer的live与old-base/resync，desktop-continuous/web-remote-replayable分别取证；不称真实IPC/GUI/relay/跨Host。P1合成props harness保持其展示职责，P3导航/Resume、CTRL及真实网络/24h另走e2e-case-lifecycle，未promotion/admit。使用case-local私有SQLite/eventStore/temp、deferred与fake timer定位切点，不用sleep猜完成；finally清理自有job/timer/订阅/gateway/runtime/store及目录。
+
+
+## 工作流恢复 renderer 展示（E2E1-P1，2026-10-21 accepted）
+
+本组仅验真实 renderer 组件消费显式合成 props 的展示合同，独立 Node/Playwright harness 位于
+`packages/desktop/test/e2e/conversation-session/manual-review/pending/workflow-recovery-renderer.test.mjs`，
+fixture 位于 `packages/ui/test/fixtures/workflow-recovery.fixture.tsx`。保持 pending；不作为 WDIO 转正、Engine、RunService、V4 IPC、真实授权或完整侧板导航证据。
+
+| Case           | Setup → action → assertions                                                                                                                                                                                               | 层级与边界                                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| E2E1-P1-A      | 合成 WF4 RecoveryExhausted、A ask settled/failed 与 B ask settled/ok → 逐一展开 GetWorkflowRun，查看真实摘要与已导出侧板状态/结果分区 → 查询卡显示错误码及 message，摘要保留 A 失败/B 完成，独立完成结果分区保留 B marker | accepted，renderer fixture；不证明实际预算耗尽、兄弟结果持久化或真实恢复                                     |
+| E2E1-P1-B      | 合成 WF5 RecoveryUncertain、completed world#1 与 executing world#2 → 展开查询与真实结果分区 → 查询卡显示错误码，结果正文显示外部结果未知/需核实/拒绝重复效果；不把未知节点伪造为成功或失败                                | accepted，renderer fixture；无 actor 的 world 节点不由摘要药丸完整表达，未知节点内部事实及重放拒绝留给 P2/P3 |
+| E2E1-P1-LAYOUT | 两错误、长错误与长完成结果 → 1200×800/390×800 × 中英 × Zai Light/Dark → 外层 page/card/tab bounded、min-height:0、overflow:hidden，document/body 无额外滚动；指定错误/结果内层可滚且头部/操作边界稳定                     | accepted，renderer fixture；窄窗不等于手机 web-remote-replayable                                             |
+
+P1 使用自有 127.0.0.1 随机端口、私有 Vite cache 和 headless 浏览器 profile；不附着未知开发服务。
+P2-A的真实服务拒绝与正常runtime/订阅/冷读已独立验收；P2-B故障恢复按上组planned推进。P3任务导航/Resume点击、WF4真授权及真实IPC/GUI/网络仍为独立验收层。
+
 ## 项目与任务草稿生命周期（2026-10-16）
 
 PD01–PD12 的前置、动作、断言与证据要求见 [统一生命周期规格](ui/project-task-draft-lifecycle.md)。产品语义 accepted；自动化保持 manual-review/pending，运行证据见 coverage matrix 与规格的验证记录，不代表已转正或发布。覆盖项目/任务新建、同目录项目隔离、接纳后默认配置、目录复用、迟到回执、手机独立恢复及旧数据认领。
@@ -4753,3 +4821,35 @@ SPR01 是连接隔离 Electron 的独立 `node:test` / CDP E2E，保持 pending�
 ## R3A-BLD-07：用户服务探测被跳过（2026-10-19）
 
 沿用 `conversation-session-r3-daemon-detached.test.ts` 的 accepted / pending 场景：独立 Linux SSH 目标首次以 detached 模式连接；桌面断开不杀 daemon。终止 daemon 后，在该目标的非交互 shell 设置 `SYSTEMD_OFFLINE=1`，确认真实 `systemctl --user show --property=Version` 退出 0 但没有属性响应，再通过桌面设备重连。必须进入 ready、`serviceRegistered=false`，Supervisor/Core 均换代，原任务可续发；最后恢复 shell 配置。禁止以替换 systemctl 或直接设置 ZCode 跳过注册开关代替该场景。
+
+### E2E1-P2-B 取消诊断补充（accepted-planned，尚未执行）
+
+B13/B22 追加：gateway result/安全error的strictAttempted保持真实boolean，adapter仅failed outcome在未取得权威历史时允许unknown，成功不得unknown；未知不能猜false。合规gateway abort必须同步reject原返回Promise，Task4闭包直接透传，adapter abort返回后仅一次microtask兜底unknown。验证true/false、历史重复、verify阶段失败、永久pending/malformed错误、已settled未消费、监听顺序、dispose先拒绝后清表、迟到零adopt及一次终结/资源清理。Task2注入端口与Task4真实gateway联合分别存证，不宣称物理GUI/网络通过。invalid仍可用旧recorder作A校验，零append/hook/model。
+
+## C02 / PV4-25Q 原生聊天入口适配（2026-10-21 本次 GUI 已验证）
+
+本次已完成两个既有队列 spec 的 CCode 原生入口与普通文本队列 GUI 验收：两个物理 case 各 1/1 test、exit 0、无重试；C02 保持 formal，PV4-25Q 保持 manual-review/pending，不 promotion/admit，不改变已有队列断言。首次由 case-local helper 观察原生 startup/ready/onboarding，仅真实点击“暂不登录，继续聊天”，随后保留默认 prepareV4ConversationE2E 的固定 cwd、项目草稿及 provider 准备。restart 复用保 profile 的现有完整 Electron/Host/CLI 退出屏障与 storage flush，进入新进程后再走同一原生按钮，然后选择原 session；不重新准备 provider/queue，不写 auth/CTRL/登录 latch。
+
+```mermaid
+sequenceDiagram
+  participant T as 队列专用测试
+  participant U as 原生 UI
+  participant R as CLI CommandInbox
+  T->>U: 首次真实入口，再默认项目/草稿准备
+  U->>R: 首轮与 queued 输入（原断言）
+  T->>T: PV4-25Q 保留既有 ACK/projection ledger 窄窗口
+  T->>R: flush + 旧 Electron/Host/CLI 退出屏障
+  T->>U: 同 HOME/userData 新 PID，真实入口并选原 session
+  U->>R: 原 query / discarded(queue) 恢复裁决
+```
+
+CLI CommandInbox 仍为 accepted queue 唯一所有者，renderer ledger 只是既有 ACK/projection 窄窗口夹具，native entry 不增业务状态或写路径。本轮先 drain 再 restart，initial/cold 均真实点击原生“暂不登录，继续聊天”。仅 Windows desktop-local ordinary-text synthetic provider replay，不代表真实 CTRL 工作授权、手机/跨 Host、24h、强杀/掉电或成功工作流恢复；本次通过不外推稳定性。
+
+| 物理 case | 本次实跑与证据 | 结果 / 生命周期 |
+| --- | --- | --- |
+| C02 drain | `queue-drain-730f46324c964e5cbfdc2e09ef1ec960`；running 入队后自动 drain，原可见用户文本/回复、queue 清空及 idle 断言通过；provider capture 3 条 fixture 请求均 complete / HTTP 200 | 1/1 test、exit 0、retry 0；保持 formal |
+| PV4-25Q restart | `queue-restart-ad4ec28492f545a3a9ec0f72305abc02`；旧 PID 69552 → 新 PID 12556，同私有 HOME/profile，完整旧进程树退出屏障；原同 queued command 的 admitted(queue) → discarded(session_resumed)、ledger 清除、无重发提示/无 queued 文本断言通过 | 1/1 test、exit 0、retry 0；保持 manual-review/pending |
+
+restart capture 仅 1 条 RUNNING 请求、无 DISCARDED 请求；该受控流在重启时仍为 pending，未保存 completed response/HTTP 完成码，不声称完整流或 HTTP 200 通过。renderer ledger 窄窗口由既有 fixture 重建，不能称全自然竞态；持久事实来自运行时只读 SQL 与原断言，未额外导出 DB 快照，也未在清理后重开 DB。两例本轮没有 screenshot/video，不称视觉逐帧复核；原 WebDriver/DOM 断言与日志构成验收证据。保留实际 Node 24.16.0 与仓库 24.14.0 偏差及非致命 warning，不宣称日志无告警。
+
+命令证据为本次交接 `queue-verification/queue-drain-01.command.json`、`queue-restart-01.command.json`，均在隔离工作树根执行 `pnpm --filter @zcode/desktop test:e2e -- --spec <当前物理 spec>`；drain spec 为 `./test/e2e/conversation-session/conversation-session-v4-queue-drain.test.ts`，restart spec 为 `./test/e2e/conversation-session/manual-review/pending/conversation-session-queued-command-restart.test.ts`。配套专用 runner 使用私有 UUID HOME/profile、compatible common+case fixture，并复用本轮已核产品；不能脱离该环境重用命令。UTC 执行日期为 2026-10-22（本地 2026-10-21）。各 run 的 `artifacts/summary.json`、`queue-native-entry.json`、provider capture 与原始日志保留，独立验收见 `queue-gui-acceptance.md`。本组是 2 个物理 tests，不与 P2 的 1 test / 3 逻辑步骤混计。

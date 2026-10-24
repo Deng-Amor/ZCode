@@ -27,6 +27,7 @@
 
 import {
   WORKFLOW_RUNS_LIMITS,
+  parseWorkflowRunProgressObservation,
   type WorkflowRunNode,
   type WorkflowRunPendingQuestion,
   type WorkflowRunReport,
@@ -105,6 +106,7 @@ export interface WorkflowRunProgressEnvelope {
   eventType?: string;
   payload?: Record<string, unknown>;
   actorSessionId?: string;
+  observationSource?: "host-reconciliation";
 }
 
 /**
@@ -122,6 +124,7 @@ export function reduceWorkflowRunsState(
   envelope: WorkflowRunProgressEnvelope,
   limits: WorkflowRunEntryLimits = WORKFLOW_RUNS_LIMITS,
 ): WorkflowRunsState | null {
+  if (parseWorkflowRunProgressObservation(envelope).kind === "invalid") return null;
   const runId = envelope.runId;
   if (!runId || typeof envelope.eventType !== "string") return null;
   const sequence = typeof envelope.sequence === "number" ? envelope.sequence : 0;
@@ -558,9 +561,14 @@ function applyWorkflowRunEvent(
       // 冷却是"新派发被冻结到何时"，终态 run 不再派发任何东西——留着它只会让状态头显示一个
       // 没有对象的倒计时。cap / ceiling 照留：它们是这次 run 跑在什么并发下的历史事实。
       // 停驻中的留白与停驻问题同命：真相是进程内的 deferred，终态 run 没有人在等补全；补上了的照留。
-      const cleared = withoutWaitingHoles(
-        withoutCooldown(withoutPendingQuestions(run, () => false)),
-      );
+      const cleared = {
+        ...withoutWaitingHoles(withoutCooldown(withoutPendingQuestions(run, () => false))),
+      };
+      // 终态载荷替换旧终态字段；仅 spread 会让旧 stopped 的 Resume 和原因残留。
+      delete cleared.resumable;
+      delete cleared.stopReason;
+      delete cleared.supersededBy;
+      delete cleared.error;
       // actor 三态里 waiting / completed 的分界看 run 是否终态，所以终态要重新派生一遍：
       // 一个建了却没被 ask 过的 actor 在 run 结束那一刻从「等待」变成「已完成」。
       // 三终态词；`stopReason` 只在 stopped 时搬运，

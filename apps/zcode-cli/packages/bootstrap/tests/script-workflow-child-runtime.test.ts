@@ -166,10 +166,8 @@ describe("script workflow child runtime — actor transcript 直播通道", () =
   });
 
   it("inherits startup global rules into workflow persona without persisting their body", async () => {
-    const sentinel = "WORKFLOW_PRIVATE_GLOBAL_SENTINEL";
     const requests: string[] = [];
     const deps = makeDeps();
-    deps.runtimeConfig = { ...deps.runtimeConfig, globalSystemPrompt: sentinel };
     deps.modelFactory = createTestModelFactoryFromAdapter({
       async generateText(request) {
         requests.push(JSON.stringify(request.messages));
@@ -192,14 +190,14 @@ describe("script workflow child runtime — actor transcript 直播通道", () =
     await actor.executeTurn("continue");
     expect(requests.length).toBeGreaterThanOrEqual(2);
     for (const request of requests) {
-      expect(request).toContain(sentinel);
+      expect(request).not.toContain("WORKFLOW_PRIVATE_GLOBAL_SENTINEL");
       expect(request).toContain("PUBLIC_ACTOR_PERSONA");
     }
     expect(
       JSON.stringify(await sessionStore.messages({ sessionID: actorSessionId })),
-    ).not.toContain(sentinel);
-    expect(JSON.stringify(await sessionStore.getSession(actorSessionId))).not.toContain(sentinel);
-    expect(JSON.stringify(await parentStore.getEvents(actorSessionId))).not.toContain(sentinel);
+    ).not.toContain("WORKFLOW_PRIVATE_GLOBAL_SENTINEL");
+    expect(JSON.stringify(await sessionStore.getSession(actorSessionId))).not.toContain("WORKFLOW_PRIVATE_GLOBAL_SENTINEL");
+    expect(JSON.stringify(await parentStore.getEvents(actorSessionId))).not.toContain("WORKFLOW_PRIVATE_GLOBAL_SENTINEL");
   });
 
   it("转发流从 sequenceNumber 1（SessionTitleUpdated）起，保留 actor 的 sessionId", async () => {

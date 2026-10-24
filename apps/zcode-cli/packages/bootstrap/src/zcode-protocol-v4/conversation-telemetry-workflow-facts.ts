@@ -8,6 +8,7 @@
 import type { DynamicWorkflowRunProgressPayload } from "@zcode/contracts";
 import {
   conversationTelemetryFactSchema,
+  parseWorkflowRunProgressObservation,
   type ConversationTelemetryFact,
 } from "@zcode/shared/zcode-protocol-v4";
 
@@ -29,6 +30,7 @@ export function workflowLifecycleFactFromProgress(
   base: Record<string, unknown>,
   progress: DynamicWorkflowRunProgressPayload,
 ): ConversationTelemetryFact | null {
+  if (parseWorkflowRunProgressObservation(progress).kind !== "legacy") return null;
   const derived = progress as DynamicWorkflowRunProgressPayload & WorkflowProgressDerivedFields;
   const launchInputId = optionalString(derived.launchInputId);
   if (launchInputId === undefined) return null;

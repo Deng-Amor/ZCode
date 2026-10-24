@@ -8,6 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./managed-skills": "./src/managed-skills/index.ts",
+    "./expert-skills": "./src/expert-skills/index.ts",
+    "./skill-identity": "./src/skill-identity/index.ts",
     "./runtime-env": "./src/runtimeEnv.ts",
     "./test-ids": "./src/test-ids.ts",
     "./mcp": "./src/mcp.ts",

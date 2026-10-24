@@ -159,7 +159,7 @@ const PACMAN_RUNTIME_DEPENDENCIES = [
   "xdg-utils",
 ];
 
-const WINDOWS_INSTALL_MANIFEST_NAME = ".zcode-install-manifest";
+const WINDOWS_INSTALL_MANIFEST_NAME = ".ccode-install-manifest";
 
 async function writeWindowsInstallManifest(context) {
   if (context.electronPlatformName !== "win32") return;
@@ -561,7 +561,10 @@ export default {
   // Linux deb 打包（fpm）会校验 package metadata 中的 homepage、author.email、maintainer。
   // CI 环境下若这些字段缺失会在产物阶段直接失败。这里统一在构建配置补齐，避免依赖外部注入。
   extraMetadata: {
-    version: buildMetadata.appVersion,
+    version: buildMetadata.productVersion ?? buildMetadata.appVersion,
+    ccodeReleaseChannel: buildMetadata.productChannel ?? "stable",
+    productName: desktopProductIdentity.productName,
+    main: "out/ccode-main.mjs",
     zcodeProductFlavor: desktopProductIdentity.flavor,
     homepage: "https://zcode.z.ai",
     author: {
@@ -682,6 +685,9 @@ export default {
           electronVersion: desktopElectronVersion,
         }),
       );
+    }
+    // 安装清单属于所有 Windows 包；此前错误绑定可选 CUA helper，开源构建会漏掉清单。
+    if (actualWindowsTarget) {
       await runTimedAsync("afterPack:writeWindowsInstallManifest", () =>
         writeWindowsInstallManifest(context),
       );
@@ -702,6 +708,7 @@ export default {
       }
     : {}),
   extraResources: [
+    { from: resolve(workspaceRoot, "LICENSE"), to: "APACHE-2.0.txt" },
     { from: resolve(workspaceRoot, noticesFileName), to: noticesFileName },
     ...(targetPlatform.os === "darwin"
       ? [
@@ -809,7 +816,7 @@ export default {
   protocols: [
     {
       // 协议处理器的展示名之前使用小写 scheme，打包产物里的协议描述无法体现产品名。
-      // 展示名跟随安装包身份；scheme 仍保持 zcode，因此两个应用中最后注册者会成为默认 handler。
+      // OAuth 回调沿用线上 zcode.ai 中转页约定的协议。
       name: desktopProductIdentity.productName,
       schemes: ["zcode"],
     },

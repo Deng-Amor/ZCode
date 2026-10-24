@@ -4,13 +4,17 @@
 
 import type { ExecutionContext, TraceContext } from "../tracing/tracer.js";
 
-export const CONFIDENTIAL_CONTROLLER_SKILL_NAME = "总控派单";
-
-/** 同名插件与路径别名必须服从同一保留身份规则，不能绕过私有加载入口。 */
-export function isConfidentialControllerSkill(value: string): boolean {
-  return value.normalize("NFKC").split(/[\\/:]/u)
-    .some((part) => part.trim() === CONFIDENTIAL_CONTROLLER_SKILL_NAME);
-}
+// 保留名/专家命名空间身份判定的唯一权威实现已提升至 `@zcode/shared/skill-identity`
+// （2026-10-22 批次2b 卡5：消除 services 层镜像，语义逐字节保持）。本包对外 API
+// 与签名不变，仅转出口委托；语义变更须改 shared 侧并同步两侧消费者测试。
+export {
+  CONFIDENTIAL_CONTROLLER_SKILL_ID,
+  CONFIDENTIAL_CONTROLLER_SKILL_NAME,
+  EXPERT_SKILL_NAMESPACE,
+  isConfidentialControllerSkill,
+  isExpertSkillIdentity,
+  isReservedExpertSkillIdentity,
+} from "@zcode/shared/skill-identity";
 
 export type SkillScope = "project" | "user" | "system" | "admin";
 

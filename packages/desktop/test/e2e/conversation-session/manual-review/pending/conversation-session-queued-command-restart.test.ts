@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { DEFAULT_WORKSPACE, clearAppData } from "../../../helpers/desktop-app.js";
-import { restartIntoWorkspacePreservingProfile } from "../../../helpers/model-provider-restart.js";
+import { enterQueueWorkspace, restartQueueWorkspace } from "../../queue-native-entry.js";
 import {
   getV4PaneSnapshot,
   prepareV4ConversationE2E,
@@ -35,6 +35,8 @@ describe("PV4-25Q：restart-discarded queue 静默清账", () => {
   it("真实 queued input 在 App/CLI 重启后 discarded，不显示重发提示", async function () {
     this.timeout(CASE_TIMEOUT_MS);
 
+    const entryEvidence: Record<string, unknown> = { case: "PV4-25Q" };
+    await enterQueueWorkspace(entryEvidence, "initialStartup");
     await prepareV4ConversationE2E();
     await sendV4Prompt(`${RUNNING_MARKER}: keep the turn running.`);
     await waitForV4TimelineContaining("QUEUED_COMMAND_RESTART_STREAMING", 60_000);
@@ -57,7 +59,7 @@ describe("PV4-25Q：restart-discarded queue 静默清账", () => {
     await seedPendingSendText(sessionId, sourceCommandId, QUEUED_MARKER);
     expect(await readPendingCommandIds()).toContain(sourceCommandId);
 
-    await restartIntoWorkspacePreservingProfile();
+    await restartQueueWorkspace(entryEvidence);
     await ensureProjectExpanded(DEFAULT_WORKSPACE);
     await selectV4TaskById(sessionId);
     await waitForV4Pane(

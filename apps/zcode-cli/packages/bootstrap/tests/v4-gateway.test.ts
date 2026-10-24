@@ -1,3 +1,6 @@
+import * as workspaceModelRuntime from "../src/zcode-protocol/workspace-model-runtime.js";
+import { createSessionRecordForV4 } from "../src/zcode-protocol/server-operations.js";
+import type { ZCodeAppOptions } from "../src/app/types.js";
 // ConversationV4Gateway 测试（M3 host 通道层 CLI 侧）。
 // 核心断言面：
 //   1. subscribe 内部 dispatch result 同时返回 ACK 与待入 outbox 的初始帧
@@ -50,7 +53,16 @@ import type { SessionConfigSeed } from "../src/zcode-protocol-v4/index.js";
 import { V4CommandExecutor } from "../src/zcode-protocol-v4/commands/executor.js";
 import type { V4SessionRecordView } from "../src/zcode-protocol-v4/commands/types.js";
 import { loadPersistentCommandFacts } from "../src/zcode-protocol-v4/persistent-command-facts.js";
-import { registerCommittedForkBestEffort } from "../src/zcode-protocol/v4-bridge.js";
+import { createWorkflowHostObservationAdapter } from "../src/zcode-protocol/workflow-host-observation-adapter.js";
+import type { WorkflowHostObservationOutcome } from "../src/zcode-protocol/workflow-host-observation/contract.js";
+import type {
+  ZCodeProtocolAgentServerContext,
+  ZCodeProtocolSessionRecord,
+} from "../src/zcode-protocol/server-types.js";
+import {
+  createConversationV4Gateway,
+  registerCommittedForkBestEffort,
+} from "../src/zcode-protocol/v4-bridge.js";
 
 // ── 事件构造（与 conversation-topic-publisher.test.ts 同一套）──
 
@@ -4914,5 +4926,1345 @@ describe("detached subagent child publisher 生命周期（session-idle-deactiva
     expect(gateway.collectMemoryDiagnostics()).toMatchObject({ detachedTerminal: 0 });
     expect(gateway.pruneDetachedChildPublishers(Date.now() + 10 * 60_000)).toBe(0);
     expect(gateway.collectMemoryDiagnostics()).toMatchObject({ publishers: 1, detachedLive: 1 });
+  });
+});
+
+describe("workflow host observation recovery", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+  function observation() {
+    return new EventLog().push(SessionEventType.DynamicWorkflowRunProgress, {
+      runId: "host-run",
+      observationSource: "host-reconciliation",
+      sequence: 0,
+      eventType: "run-settled",
+      payload: {
+        status: "errored",
+        error: { code: "RecoveryUncertain", message: "Unknown outcome" },
+      },
+    });
+  }
+  function fixture() {
+    const event = observation();
+    const abort = new AbortController();
+    const owner = {
+      signal: abort.signal,
+      deadlineAt: 25000,
+      now: () => Date.now() - start,
+      isCurrent: () => true,
+    };
+    const start = Date.now();
+    const load = vi.fn(async () => ({
+      events: [event],
+      synthesized: false,
+      sourceEventSeq: 1,
+      verifiedTarget: event,
+    }));
+    const gateway = new ConversationV4Gateway({
+      sessionExists: () => true,
+      emitWireFrame: () => {},
+      executeCommand: async () => undefined,
+      loadWorkflowHostObservationProjection: load,
+    });
+    const ensure = () =>
+      gateway.ensureWorkflowHostObservationCommit(
+        "session-1",
+        { eventId: event.id, runId: "host-run" },
+        owner,
+      );
+    return { event, abort, owner, load, gateway, ensure };
+  }
+  function internal(gateway: ConversationV4Gateway) {
+    return gateway as unknown as {
+      publishers: Map<string, ConversationTopicPublisher>;
+      rawSequenceStates: Map<
+        string,
+        { sourceEventSeq: number; appliedEventIds: Set<string>; seenEventIds: Set<string> }
+      >;
+      hydratePublisher(
+        sessionId: string,
+        messages?: never,
+        force?: boolean,
+      ): Promise<ConversationTopicPublisher>;
+      host: {
+        loadPersistedEvents?: () => Promise<{
+          events: SessionEvent[];
+          synthesized: boolean;
+          sourceEventSeq: number;
+        }>;
+      };
+    };
+  }
+  async function microtasks() {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  }
+  it.each(["cursor", "loaded-applied", "seen"])("B06 %s is not actual admission", async (kind) => {
+    const f = fixture();
+    try {
+      f.gateway.ingest("session-1", {
+        ...f.event,
+        id: "bootstrap" as EventId,
+        type: SessionEventType.SessionCreated,
+        payload: { mode: "build" },
+      });
+      const raw = internal(f.gateway).rawSequenceStates.get("session-1")!;
+      if (kind === "loaded-applied") raw.appliedEventIds.add(f.event.id);
+      if (kind === "seen") raw.seenEventIds.add(f.event.id);
+      const promise = f.ensure();
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(promise).resolves.toEqual({ strictAttempted: true });
+      expect(f.load).toHaveBeenCalledTimes(1);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B07 nonthrow ingest no-op cannot forge actual admission over an existing terminal run", async () => {
+    const f = fixture();
+    try {
+      f.gateway.ingest("session-1", { ...f.event, id: "earlier" as EventId });
+      const publisher = internal(f.gateway).publishers.get("session-1")!;
+      const noOp = vi.spyOn(publisher, "ingest").mockImplementationOnce(() => {});
+      f.gateway.ingest("session-1", { ...f.event, sequenceNumber: 2 });
+      noOp.mockRestore();
+      const storedTarget = { ...f.event, sequenceNumber: 2 };
+      f.load.mockResolvedValue({
+        events: [{ ...f.event, id: "earlier" as EventId }, storedTarget],
+        verifiedTarget: storedTarget,
+        synthesized: false,
+        sourceEventSeq: 2,
+      });
+      const promise = f.ensure();
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(promise).resolves.toEqual({ strictAttempted: true });
+      expect(f.load).toHaveBeenCalledTimes(1);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B08 raw gap waits for actual admission and never counts seen as applied", async () => {
+    const f = fixture();
+    try {
+      f.gateway.ingest("session-1", { ...f.event, sequenceNumber: 2 });
+      const promise = f.ensure();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(f.load).not.toHaveBeenCalled();
+      f.gateway.ingest("session-1", {
+        ...f.event,
+        id: "first" as EventId,
+        type: SessionEventType.SessionCreated,
+        payload: { mode: "build" },
+      });
+      await expect(promise).resolves.toEqual({ strictAttempted: false });
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B09 waits for ordinary flight then reserves strict against a competing normal hydrate", async () => {
+    const f = fixture();
+    let release!: (value: {
+      events: SessionEvent[];
+      synthesized: boolean;
+      sourceEventSeq: number;
+    }) => void;
+    internal(f.gateway).host.loadPersistedEvents = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    try {
+      const normal = internal(f.gateway).hydratePublisher("session-1");
+      const promise = f.ensure();
+      await microtasks();
+      expect(f.load).not.toHaveBeenCalled();
+      release({ events: [], synthesized: false, sourceEventSeq: 0 });
+      await normal;
+      const concurrent = internal(f.gateway).hydratePublisher("session-1", undefined, true);
+      await microtasks();
+      if (f.load.mock.calls.length === 0)
+        release({ events: [], synthesized: false, sourceEventSeq: 0 });
+      await expect(promise).resolves.toEqual({ strictAttempted: true });
+      await concurrent;
+      expect(f.load).toHaveBeenCalledTimes(1);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B09 ordinary load failure does not consume strict success", async () => {
+    const f = fixture();
+    internal(f.gateway).host.loadPersistedEvents = async () => {
+      throw new Error("ordinary failure");
+    };
+    try {
+      const normal = internal(f.gateway).hydratePublisher("session-1");
+      const promise = f.ensure();
+      await normal;
+      await expect(promise).resolves.toEqual({ strictAttempted: true });
+      expect(f.load).toHaveBeenCalledTimes(1);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B13 simultaneous event requests join the same original Promise", async () => {
+    const f = fixture();
+    try {
+      const first = f.ensure();
+      expect(f.ensure()).toBe(first);
+      await first;
+      expect(f.load).toHaveBeenCalledTimes(1);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it.each(["abort", "deadline"])(
+    "B14 %s while joining old flight consumes the unique attempt without loading strict",
+    async (mode) => {
+      const f = fixture();
+      let release!: (value: {
+        events: SessionEvent[];
+        synthesized: boolean;
+        sourceEventSeq: number;
+      }) => void;
+      internal(f.gateway).host.loadPersistedEvents = () =>
+        new Promise((resolve) => {
+          release = resolve;
+        });
+      try {
+        const normal = internal(f.gateway).hydratePublisher("session-1");
+        const original = f.ensure();
+        const caught = original.catch((error) => error);
+        await microtasks();
+        expect(f.load).not.toHaveBeenCalled();
+        if (mode === "abort") f.abort.abort("disposed");
+        else await vi.advanceTimersByTimeAsync(25000);
+        const expected = {
+          phase: "old_flight",
+          reasonCode: mode === "abort" ? "disposed" : "timeout",
+          strictAttempted: true,
+        };
+        expect(await caught).toMatchObject(expected);
+        const repeat = () =>
+          f.gateway.ensureWorkflowHostObservationCommit(
+            "session-1",
+            { eventId: f.event.id, runId: "host-run" },
+            { ...f.owner, signal: new AbortController().signal, deadlineAt: f.owner.now() + 25000 },
+          );
+        await expect(repeat()).rejects.toMatchObject(expected);
+        // 唯一尝试包含旧 flight 等待；取消后旧普通加载仍可结束，但不能启动迟到 strict 或清除失败历史。
+        release({ events: [], synthesized: false, sourceEventSeq: 0 });
+        await normal;
+        await microtasks();
+        await expect(repeat()).rejects.toMatchObject(expected);
+        expect(f.load).not.toHaveBeenCalled();
+        expect(
+          internal(f.gateway).publishers.get("session-1")?.getSnapshot().workflowRuns?.runs ?? [],
+        ).toEqual([]);
+      } finally {
+        f.gateway.dispose();
+      }
+    },
+  );
+  it("B14 deadline releases pending strict slot and late load cannot adopt", async () => {
+    const f = fixture();
+    let release!: (value: Awaited<ReturnType<typeof f.load>>) => void;
+    f.load.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    try {
+      const failure = f.ensure().catch((error) => error);
+      await microtasks();
+      await vi.advanceTimersByTimeAsync(25000);
+      expect(await failure).toMatchObject({ reasonCode: "timeout", strictAttempted: true });
+      internal(f.gateway).host.loadPersistedEvents = async () => ({
+        events: [],
+        synthesized: false,
+        sourceEventSeq: 0,
+      });
+      await internal(f.gateway).hydratePublisher("session-1", undefined, true);
+      release({
+        events: [f.event],
+        verifiedTarget: f.event,
+        synthesized: false,
+        sourceEventSeq: 1,
+      });
+      await microtasks();
+      expect(
+        internal(f.gateway).publishers.get("session-1")?.getSnapshot().workflowRuns?.runs ?? [],
+      ).toEqual([]);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B15 dispose takes metadata before clearing generation; old load cannot enter a replacement", async () => {
+    const f = fixture();
+    let release!: (value: Awaited<ReturnType<typeof f.load>>) => void;
+    f.load.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const failure = f.ensure().catch((error) => error);
+    await microtasks();
+    f.gateway.disposeSession("session-1");
+    expect(await failure).toMatchObject({ reasonCode: "disposed", strictAttempted: true });
+    f.gateway.ingest("session-1", {
+      ...f.event,
+      id: "replacement" as EventId,
+      type: SessionEventType.SessionCreated,
+      payload: { mode: "build" },
+    });
+    release({ events: [f.event], verifiedTarget: f.event, synthesized: false, sourceEventSeq: 1 });
+    await microtasks();
+    expect(
+      internal(f.gateway).publishers.get("session-1")?.getSnapshot().workflowRuns?.runs ?? [],
+    ).toEqual([]);
+    f.gateway.dispose();
+  });
+  it.each(["loaded", "tail"])(
+    "B16 generic cancelled identity is excluded from %s replay",
+    async (where) => {
+      const f = fixture();
+      const cancelled = {
+        ...f.event,
+        id: "cancelled-turn" as EventId,
+        sequenceNumber: 2,
+        type: SessionEventType.TurnStarted,
+        turnId: "cancelled" as TurnId,
+        payload: { turnNumber: 1, input: "must not revive" },
+      };
+      const control = new AbortController();
+      const wait = f.gateway
+        .waitForProjectionEventCommit("session-1", cancelled.id, { signal: control.signal })
+        .catch((error) => error);
+      control.abort();
+      await wait;
+      if (where === "loaded")
+        f.load.mockResolvedValue({
+          events: [f.event, cancelled],
+          verifiedTarget: f.event,
+          synthesized: false,
+          sourceEventSeq: 2,
+        });
+      else
+        f.load.mockImplementation(async () => {
+          f.gateway.ingest("session-1", cancelled);
+          return {
+            events: [f.event],
+            verifiedTarget: f.event,
+            synthesized: false,
+            sourceEventSeq: 1,
+          };
+        });
+      try {
+        await f.ensure();
+        expect(
+          internal(f.gateway).publishers.get("session-1")?.getSnapshot().rows.window ?? [],
+        ).toEqual([]);
+        await expect(
+          f.gateway.waitForProjectionEventCommit("session-1", cancelled.id),
+        ).rejects.toBeDefined();
+      } finally {
+        f.gateway.dispose();
+      }
+    },
+  );
+  it("B17 missing contiguous raw tail fails without replacing live projection", async () => {
+    const f = fixture();
+    f.load.mockImplementation(async () => {
+      f.gateway.ingest("session-1", { ...f.event, id: "gap-tail" as EventId, sequenceNumber: 3 });
+      return { events: [f.event], verifiedTarget: f.event, synthesized: false, sourceEventSeq: 1 };
+    });
+    try {
+      await expect(f.ensure()).rejects.toMatchObject({ reasonCode: "target_not_applied" });
+      expect(
+        internal(f.gateway).publishers.get("session-1")?.getSnapshot().workflowRuns?.runs ?? [],
+      ).toEqual([]);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B18 later run fact cannot be rolled back to target old terminal state", async () => {
+    const f = fixture();
+    f.load.mockImplementation(async () => {
+      f.gateway.ingest("session-1", {
+        ...f.event,
+        id: "later" as EventId,
+        sequenceNumber: 2,
+        payload: { runId: "host-run", sequence: 1, eventType: "run-started", payload: {} },
+      });
+      return { events: [f.event], verifiedTarget: f.event, synthesized: false, sourceEventSeq: 1 };
+    });
+    try {
+      await expect(f.ensure()).rejects.toMatchObject({ reasonCode: "postcondition_failed" });
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it.each(["dispose", "timeout"])(
+    "real adapter -> gateway direct Promise keeps true on %s",
+    async (kind) => {
+      const f = fixture();
+      const outcomes: WorkflowHostObservationOutcome[] = [];
+      f.load.mockImplementation(() => new Promise(() => {}));
+      const adapter = createWorkflowHostObservationAdapter({
+        isCurrent: () => true,
+        now: () => Date.now(),
+        verifyStored: async (event) => event,
+        ensureCommit: (event, owner) =>
+          f.gateway.ensureWorkflowHostObservationCommit(
+            "session-1",
+            { eventId: event.id, runId: "host-run" },
+            owner,
+          ),
+        report: (outcome) => outcomes.push(outcome),
+      });
+      try {
+        adapter.accept(f.event);
+        await microtasks();
+        expect(f.load).toHaveBeenCalledTimes(1);
+        if (kind === "dispose") adapter.dispose();
+        else await vi.advanceTimersByTimeAsync(25000);
+        await microtasks();
+        expect(outcomes).toHaveLength(1);
+        expect(outcomes[0]).toMatchObject({
+          event: "workflow.host_observation.sync.failed",
+          strictAttempted: true,
+          reasonCode: kind === "dispose" ? "disposed" : "timeout",
+        });
+      } finally {
+        adapter.dispose();
+        f.gateway.dispose();
+      }
+    },
+  );
+  function bridgeFixture() {
+    const event = observation();
+    const session = {
+      id: "session-1",
+      projectID: "project",
+      slug: "host",
+      directory: "/workspace",
+      path: "/workspace",
+      title: "host",
+      version: "test",
+      time: { created: 0, updated: 0 },
+    };
+    const store = {
+      getSession: vi.fn(async () => session),
+      messages: vi.fn(async () => []),
+      readTarget: vi.fn(async () => null),
+      sessionEntries: vi.fn(async () => []),
+    };
+    const eventStore = {
+      getEvents: vi.fn(async () => [event]),
+      getLatestSequenceNumber: vi.fn(async () => 1),
+    };
+    const runtime = {
+      getSessionModelSelection: vi.fn(() => undefined),
+      getProjection: vi.fn(async () => ({ contextUsed: 0, contextWindow: 200000 })),
+      getPlanEnabled: () => false,
+    };
+    const app = {
+      runtime,
+      sessionId: "session-1",
+      getMode: vi.fn(() => "build"),
+      listModels: () => [],
+      replayDynamicWorkflowRuns: vi.fn(async () => []),
+      readToolResultArtifact: vi.fn(async () => ({ content: "" })),
+    };
+    const record = {
+      app,
+      eventStore,
+      workspace: { workspacePath: "/workspace", workspaceKey: "local:/workspace" },
+      stateRevision: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    } as unknown as ZCodeProtocolSessionRecord;
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const context = {
+      sessions: new Map([["session-1", record]]),
+      deps: { sessionStore: store },
+      appRuntimePreferences: {},
+      notify: () => {},
+      logger,
+      v4Interactions: { resolve: () => false },
+      workspaceModelCatalogs: new Map(),
+    } as unknown as ZCodeProtocolAgentServerContext;
+    const gateway = createConversationV4Gateway(context);
+    context.v4Gateway = gateway;
+    const abort = new AbortController();
+    const owner = { signal: abort.signal, deadlineAt: 25000, now: () => 0, isCurrent: () => true };
+    const ensure = () =>
+      gateway.ensureWorkflowHostObservationCommit(
+        "session-1",
+        { eventId: event.id, runId: "host-run" },
+        owner,
+      );
+    return {
+      event,
+      store,
+      eventStore,
+      runtime,
+      app,
+      record,
+      context,
+      gateway,
+      logger,
+      ensure,
+      abort,
+    };
+  }
+  it("B10 actual bridge reads direct raw target and all seeds", async () => {
+    const f = bridgeFixture();
+    try {
+      await expect(f.ensure()).resolves.toEqual({ strictAttempted: true });
+      expect(f.store.sessionEntries).toHaveBeenCalled();
+      expect(f.runtime.getProjection).toHaveBeenCalled();
+      expect(f.app.getMode).toHaveBeenCalled();
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it.each([
+    "host-only",
+    "Engine-only",
+    "mixed",
+    "distinct",
+    "invalid-source",
+    "invalid-host",
+    "undefined-source",
+  ])("bridge journal replay exclusion preserves source compatibility: %s", async (mode) => {
+    const f = bridgeFixture();
+    const engine = {
+      ...f.event,
+      id: "engine-event" as EventId,
+      payload: {
+        runId: mode === "distinct" ? "engine-run" : "host-run",
+        sequence: 1,
+        eventType: "run-started",
+        payload: {},
+      },
+    };
+    const raw =
+      mode === "Engine-only"
+        ? [engine]
+        : mode === "mixed" || mode === "distinct"
+          ? [engine, f.event]
+          : mode === "host-only"
+            ? [f.event]
+            : [
+                {
+                  ...f.event,
+                  payload: {
+                    ...(f.event.payload as object),
+                    ...(mode === "invalid-host"
+                      ? { sequence: 1 }
+                      : { observationSource: mode === "undefined-source" ? undefined : "future" }),
+                  },
+                },
+              ];
+    f.eventStore.getEvents.mockResolvedValue(raw);
+    const replay = vi.fn(async (_input: { excludeRunIds: ReadonlySet<string> }) => []);
+    Object.assign(f.app, { replayDynamicWorkflowRuns: replay });
+    try {
+      const load = internal(f.gateway).host.loadPersistedEvents as unknown as (
+        sessionId: string,
+      ) => Promise<unknown>;
+      await load("session-1");
+      expect(replay).toHaveBeenCalledTimes(1);
+      expect([...replay.mock.calls[0]![0].excludeRunIds]).toEqual(
+        mode === "Engine-only" || mode === "mixed"
+          ? ["host-run"]
+          : mode === "distinct"
+            ? ["engine-run"]
+            : [],
+      );
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it.each(["normal", "strict"])(
+    "bridge journal nodes precede host terminal correction in %s materialization",
+    async (mode) => {
+      const f = bridgeFixture();
+      const journal = [
+        { runId: "host-run", sequence: 1, eventType: "run-started", payload: {} },
+        {
+          runId: "host-run",
+          sequence: 2,
+          eventType: "node-settled",
+          payload: { instance: { siteId: "world#1", ordinal: 1 }, outcome: "ok" },
+        },
+        {
+          runId: "host-run",
+          sequence: 3,
+          eventType: "node-dispatched",
+          payload: { instance: { siteId: "world#2", ordinal: 1 } },
+        },
+        {
+          runId: "host-run",
+          sequence: 4,
+          eventType: "run-settled",
+          payload: { status: "stopped", resumable: true, stopReason: "interrupted" },
+        },
+      ];
+      const replay = vi.fn(async ({ excludeRunIds }: { excludeRunIds: ReadonlySet<string> }) =>
+        excludeRunIds.has("host-run") ? [] : journal,
+      );
+      Object.assign(f.app, { replayDynamicWorkflowRuns: replay });
+      try {
+        if (mode === "strict") await expect(f.ensure()).resolves.toEqual({ strictAttempted: true });
+        else await f.gateway.subscribe(subscribeParams());
+        const run = internal(f.gateway).publishers.get("session-1")!.getSnapshot().workflowRuns!
+          .runs[0]!;
+        expect(run).toMatchObject({
+          status: "errored",
+          error: "Unknown outcome",
+          lastEventSequence: 4,
+          nodes: [
+            { siteId: "world#1", ordinal: 1, phase: "settled", outcome: "ok" },
+            { siteId: "world#2", ordinal: 1, phase: "dispatched" },
+          ],
+        });
+        expect(run).not.toHaveProperty("resumable");
+        expect(run).not.toHaveProperty("stopReason");
+        expect(internal(f.gateway).rawSequenceStates.get("session-1")?.sourceEventSeq).toBe(1);
+        await expect(f.eventStore.getEvents.mock.results[0]?.value).resolves.toEqual([f.event]);
+      } finally {
+        f.gateway.dispose();
+      }
+    },
+  );
+  it.each([
+    "raw",
+    "cursor",
+    "messages",
+    "session",
+    "entries",
+    "target",
+    "workflow",
+    "usage",
+    "subagents",
+    "config",
+  ])("B11 strict %s source rejection cannot downgrade to an empty seed", async (source) => {
+    const f = bridgeFixture();
+    const failure = new Error("private-source-marker");
+    if (source === "raw") f.eventStore.getEvents.mockRejectedValue(failure);
+    if (source === "cursor") f.eventStore.getLatestSequenceNumber.mockRejectedValue(failure);
+    if (source === "messages") f.store.messages.mockRejectedValue(failure);
+    if (source === "session") f.store.getSession.mockRejectedValue(failure);
+    if (source === "entries") f.store.sessionEntries.mockRejectedValue(failure);
+    if (source === "target") f.store.readTarget.mockRejectedValue(failure);
+    if (source === "workflow") f.app.replayDynamicWorkflowRuns.mockRejectedValue(failure);
+    if (source === "usage") f.runtime.getProjection.mockRejectedValue(failure);
+    if (source === "subagents")
+      f.runtime.getProjection
+        .mockResolvedValueOnce({ contextUsed: 0, contextWindow: 200000 })
+        .mockRejectedValue(failure);
+    if (source === "config")
+      f.app.getMode.mockImplementation(() => {
+        throw failure;
+      });
+    try {
+      await expect(f.ensure()).rejects.toMatchObject({
+        reasonCode: "strict_load_failed",
+        strictAttempted: true,
+      });
+      expect(
+        internal(f.gateway).publishers.get("session-1")?.getSnapshot().workflowRuns?.runs ?? [],
+      ).toEqual([]);
+      expect(JSON.stringify(f.logger.warn.mock.calls)).not.toContain("private-source-marker");
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B11 file artifact read rejection is strict and does not publish partial history", async () => {
+    const f = bridgeFixture();
+    const messages = [
+      {
+        info: { id: "user-file", sessionID: "session-1", role: "user", time: { created: 0 } },
+        parts: [],
+      },
+    ];
+    f.store.messages.mockResolvedValue(messages as never);
+    f.eventStore.getEvents.mockResolvedValue([
+      f.event,
+      {
+        ...f.event,
+        id: "checkpoint" as EventId,
+        sequenceNumber: 2,
+        type: SessionEventType.CheckpointCreated,
+        payload: {
+          checkpointId: "checkpoint",
+          messageId: "user-file",
+          scope: "workspace",
+          snapshotRef: "artifact://checkpoint",
+        },
+      },
+    ]);
+    f.eventStore.getLatestSequenceNumber.mockResolvedValue(2);
+    f.app.readToolResultArtifact.mockRejectedValue(new Error("private-artifact-marker"));
+    try {
+      await expect(f.ensure()).rejects.toMatchObject({ reasonCode: "strict_load_failed" });
+      expect(f.app.readToolResultArtifact).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(f.logger.warn.mock.calls)).not.toContain("private-artifact-marker");
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B10 target materialization cannot substitute a different payload for verified raw identity", async () => {
+    const f = fixture();
+    f.load.mockResolvedValue({
+      events: [
+        {
+          ...f.event,
+          payload: {
+            ...(f.event.payload as object),
+            payload: {
+              status: "errored",
+              error: { code: "RecoveryUncertain", message: "substituted" },
+            },
+          },
+        },
+      ],
+      verifiedTarget: f.event,
+      synthesized: false,
+      sourceEventSeq: 1,
+    });
+    try {
+      await expect(f.ensure()).rejects.toMatchObject({ reasonCode: "identity_unverifiable" });
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B10 bridge rejects duplicate raw identities", async () => {
+    const f = bridgeFixture();
+    f.eventStore.getEvents.mockResolvedValue([f.event, f.event]);
+    try {
+      await expect(f.ensure()).rejects.toMatchObject({ strictAttempted: true });
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B15 bridge does not borrow a replacement record with the same session id", async () => {
+    const f = bridgeFixture();
+    let release!: (events: SessionEvent[]) => void;
+    f.eventStore.getEvents.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const promise = f.ensure();
+    await microtasks();
+    f.context.sessions.set("session-1", { ...f.record, app: { ...f.record.app } });
+    release([f.event]);
+    try {
+      await expect(promise).rejects.toMatchObject({ strictAttempted: true });
+      expect(f.runtime.getProjection).not.toHaveBeenCalled();
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it.each([
+    "complete",
+    "cancel",
+    "telemetry-config",
+    "seed-config",
+    "logger-throw",
+    "index-delivery",
+    "frame-delivery",
+  ])(
+    "protocol factory injects hook and shares complete callback / original cancellation Promise: %s",
+    async (mode) => {
+      const f = bridgeFixture();
+      f.context.sessions.clear();
+      // This fixture replaces app construction only; factory, stored verification, adapter and gateway are real.
+      let options!: Omit<ZCodeAppOptions, "providerRegistry">;
+      let callback!: (event: SessionEvent) => void;
+      const unsubscribe = vi.fn();
+      const deliveryFailure = vi.fn(() => {
+        throw new Error("private-delivery-marker");
+      });
+      Object.assign(f.runtime, {
+        subscribeEvents: ({
+          onSessionEvent,
+        }: {
+          onSessionEvent: (event: SessionEvent) => void;
+        }) => {
+          callback = onSessionEvent;
+          return unsubscribe;
+        },
+      });
+      Object.assign(f.context.deps, {
+        sessionStore: undefined,
+        createSessionEventStore: () => f.eventStore,
+      });
+      Object.assign(f.context, {
+        requestClient: async () => ({
+          memoryEnabled: true,
+          subagentRuntimeConfigEnabled: false,
+          nativeSearchEnhancementsEnabled: false,
+          toolSearchMode: "off",
+        }),
+        v4Interactions: { initializeAskUserQuestionAutoResolutionEnabled: async () => {} },
+      });
+      const constructor = vi
+        .spyOn(workspaceModelRuntime, "createWorkspaceZCodeApp")
+        .mockImplementation(async (_context, _workspace, input) => {
+          options = input;
+          expect(options.onWorkflowHostObservationStored).toBeTypeOf("function");
+          return f.app as unknown as ZCodeProtocolSessionRecord["app"];
+        });
+      try {
+        await createSessionRecordForV4(f.context, {
+          sessionId: "session-1",
+          workspace: { workspaceKey: "local:/workspace", workspacePath: "/workspace" },
+        });
+        const record = f.context.sessions.get("session-1")!;
+        // Failure before gateway ingest must be swallowed by the adapter around the COMPLETE callback.
+        let forwardFailure = mode === "complete" || mode === "cancel" || mode === "logger-throw";
+        Object.defineProperty(record, "persistence", {
+          configurable: true,
+          get() {
+            if (forwardFailure) {
+              forwardFailure = false;
+              throw new Error("private-forward-marker");
+            }
+            return "immediate";
+          },
+        });
+        if (mode === "telemetry-config" || mode === "seed-config") {
+          f.app.getMode.mockImplementation(() => {
+            throw new Error("private-config-marker");
+          });
+          if (mode === "seed-config") f.app.getMode.mockImplementationOnce(() => "build");
+        }
+        if (mode === "logger-throw")
+          f.logger.warn.mockImplementation(() => {
+            throw new Error("private-logger-marker");
+          });
+        if (mode === "index-delivery")
+          Object.assign(internal(f.gateway).host, {
+            getSessionWorkspaceId: deliveryFailure,
+          });
+        if (mode === "frame-delivery") {
+          const subscription = await f.gateway.subscribe(subscribeParams());
+          subscription.commit();
+          Object.assign(internal(f.gateway).host, {
+            emitWireFrame: deliveryFailure,
+          });
+          f.event = { ...f.event, sequenceNumber: 2, id: "delivery-target" as EventId };
+          f.eventStore.getEvents.mockResolvedValue([f.event]);
+        }
+        if (mode === "cancel" || mode === "logger-throw")
+          f.runtime.getProjection.mockImplementation(() => new Promise(() => {}));
+        expect(() => callback(f.event)).not.toThrow();
+        options.onWorkflowHostObservationStored!(f.event);
+        await microtasks();
+        await microtasks();
+        if (mode === "index-delivery" || mode === "frame-delivery")
+          expect(deliveryFailure).toHaveBeenCalled();
+        if (mode === "index-delivery" || mode === "frame-delivery") {
+          const deliveryDiagnostics = f.logger.warn.mock.calls.filter(
+            (call) => call[1]?.scope === "v4.workflowHostObservation.delivery_fault",
+          );
+          expect(deliveryDiagnostics).toHaveLength(1);
+          expect(deliveryDiagnostics[0]?.[1]?.error).toBe("delivery_fault");
+        }
+        if (mode === "seed-config") await vi.advanceTimersByTimeAsync(1000);
+        if (mode === "cancel" || mode === "logger-throw") {
+          record.unsubscribe?.();
+          await microtasks();
+        }
+        const completed = f.logger.info.mock.calls.filter(
+          (call) => call[1]?.event === "workflow.host_observation.sync.completed",
+        );
+        const failed = f.logger.warn.mock.calls.filter(
+          (call) => call[1]?.event === "workflow.host_observation.sync.failed",
+        );
+        expect(
+          JSON.stringify(Object.values(f.logger).flatMap((logger) => logger.mock.calls)),
+        ).not.toMatch(/private-(forward|config|logger|delivery)-marker/);
+        if (mode !== "complete" && mode !== "index-delivery" && mode !== "frame-delivery") {
+          expect(completed).toHaveLength(0);
+          expect(failed).toHaveLength(1);
+          expect(failed[0]?.[1]).toMatchObject({
+            strictAttempted: true,
+            reasonCode:
+              mode === "cancel" || mode === "logger-throw" ? "disposed" : "strict_load_failed",
+          });
+        } else {
+          expect(completed).toHaveLength(1);
+          expect(failed).toHaveLength(0);
+        }
+        expect(JSON.stringify(f.logger.warn.mock.calls)).not.toContain("private-forward-marker");
+        if (mode !== "cancel" && mode !== "logger-throw") record.unsubscribe?.();
+        expect(unsubscribe).toHaveBeenCalledTimes(1);
+        f.context.sessions.set("session-1", { ...f.record });
+        const before = f.eventStore.getEvents.mock.calls.length;
+        callback(f.event);
+        await microtasks();
+        expect(f.eventStore.getEvents.mock.calls.length).toBe(before);
+      } finally {
+        constructor.mockRestore();
+        f.gateway.dispose();
+      }
+    },
+  );
+  it.each(
+    ["desktop-continuous", "web-remote-replayable"].flatMap((profile) =>
+      ["index", "frame", "diagnostic", "index-frame", "both"].map((fault) => [profile, fault]),
+    ),
+  )(
+    "host delivery faults preserve ready drain and healthy subscriptions for %s / %s",
+    async (clientMode, fault) => {
+      const f = fixture();
+      const frames: ConversationTopicFrame[] = [];
+      const diagnostic = vi.fn((_scope: string, _error: unknown) => {
+        if (fault === "diagnostic") throw new Error("private-diagnostic-marker");
+      });
+      try {
+        f.gateway.ingest("session-1", {
+          ...f.event,
+          id: "bootstrap" as EventId,
+          type: SessionEventType.SessionCreated,
+          payload: { mode: "build" },
+        });
+        const first = await f.gateway.subscribe(
+          subscribeParams({ clientMode, connectionId: "bad" }),
+        );
+        first.commit();
+        const second = await f.gateway.subscribe(
+          subscribeParams({ clientMode, connectionId: "good" }),
+        );
+        second.commit();
+        let badIndexId: string | undefined;
+        let goodIndexId: string | undefined;
+        if (fault === "index-frame") {
+          Object.assign(internal(f.gateway).host, { getSessionWorkspaceId: () => "workspace" });
+          badIndexId = (
+            await f.gateway.subscribeSessionsIndex(
+              subscribeParams({
+                topic: "sessions-index/workspace",
+                connectionId: "index-bad",
+                clientMode,
+              }),
+            )
+          ).ack.subscriptionId;
+          goodIndexId = (
+            await f.gateway.subscribeSessionsIndex(
+              subscribeParams({
+                topic: "sessions-index/workspace",
+                connectionId: "index-good",
+                clientMode,
+              }),
+            )
+          ).ack.subscriptionId;
+          Object.assign(internal(f.gateway).host, {
+            getSessionIndexMeta: () => ({ createdAt: 0, lastActivityAt: Date.now() + 1 }),
+          });
+        }
+        const failedWire = vi.fn();
+        const deliveredIndexIds: string[] = [];
+        Object.assign(internal(f.gateway).host, {
+          onError: diagnostic,
+          getSessionWorkspaceId:
+            fault === "index" || fault === "both"
+              ? vi.fn().mockImplementationOnce(() => {
+                  throw new Error("private-delivery-marker");
+                })
+              : () => (fault === "index-frame" ? "workspace" : undefined),
+          emitWireFrame: (wire: RoutedTopicWireFrame) => {
+            if (
+              fault !== "index" &&
+              wire.subscriptionId === (badIndexId ?? first.ack.subscriptionId)
+            ) {
+              failedWire();
+              throw new Error("private-delivery-marker");
+            }
+            if (wire.topic.startsWith("sessions-index/"))
+              deliveredIndexIds.push(wire.subscriptionId);
+            else collectCompleteConversationFrame(frames, wire);
+          },
+        });
+        const later = {
+          ...f.event,
+          id: "later-model" as EventId,
+          sequenceNumber: 3,
+          type: SessionEventType.ModelSelected,
+          payload: { modelSelection: { providerId: "provider", modelId: "later-model" } },
+        };
+        f.gateway.ingest("session-1", later);
+        expect(() =>
+          f.gateway.ingest("session-1", { ...f.event, sequenceNumber: 2 }),
+        ).not.toThrow();
+        const publisher = internal(f.gateway).publishers.get("session-1")!;
+        expect(publisher.getSnapshot().config.model).toBe("later-model");
+        expect(publisher.getSnapshot().seq).toBe(3);
+        expect(frames.some((frame) => frame.subscriptionId === second.ack.subscriptionId)).toBe(
+          true,
+        );
+        if (fault !== "index") expect(failedWire).toHaveBeenCalledTimes(1);
+        if (goodIndexId) expect(deliveredIndexIds).toContain(goodIndexId);
+        expect(diagnostic).toHaveBeenCalledTimes(1);
+        expect(diagnostic.mock.calls[0]?.[0]).toBe("v4.workflowHostObservation.delivery_fault");
+        expect((diagnostic.mock.calls[0]?.[1] as Error | undefined)?.message).toBe(
+          "delivery_fault",
+        );
+        await expect(f.ensure()).resolves.toEqual({ strictAttempted: false });
+        expect(f.load).not.toHaveBeenCalled();
+        f.gateway.ingest("session-1", later);
+        f.gateway.ingest("session-1", {
+          ...later,
+          id: "after-model" as EventId,
+          sequenceNumber: 4,
+          payload: { modelSelection: { providerId: "provider", modelId: "after-model" } },
+        });
+        expect(publisher.getSnapshot().seq).toBe(4);
+        expect(publisher.getSnapshot().config.model).toBe("after-model");
+      } finally {
+        f.gateway.dispose();
+      }
+    },
+  );
+  it.each(["desktop-continuous", "web-remote-replayable"])(
+    "B18 strict keeps original subscription and publishes recovery for %s",
+    async (clientMode) => {
+      const f = fixture();
+      const frames: ConversationTopicFrame[] = [];
+      Object.assign(internal(f.gateway).host, {
+        emitWireFrame: (wire: RoutedTopicWireFrame) =>
+          collectCompleteConversationFrame(frames, wire),
+      });
+      try {
+        const subscribed = await f.gateway.subscribe(subscribeParams({ clientMode }));
+        subscribed.commit();
+        const publisher = internal(f.gateway).publishers.get("session-1")!;
+        await f.ensure();
+        expect(internal(f.gateway).publishers.get("session-1")).toBe(publisher);
+        expect(publisher.hasSubscription(subscribed.ack.subscriptionId, "conn-1")).toBe(true);
+        expect(frames).toHaveLength(1);
+        expect(frames[0]?.payload).toMatchObject({
+          kind: "snapshot",
+          snapshot: { workflowRuns: { runs: [{ runId: "host-run", status: "errored" }] } },
+        });
+      } finally {
+        f.gateway.dispose();
+      }
+    },
+  );
+  it("generic applied event remains successful before an already aborted signal", async () => {
+    const f = fixture();
+    f.gateway.ingest("session-1", f.event);
+    f.abort.abort();
+    try {
+      await expect(
+        f.gateway.waitForProjectionEventCommit("session-1", f.event.id, { signal: f.abort.signal }),
+      ).resolves.toBeUndefined();
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it.each([false, true])(
+    "normal usage await cannot mark replacement generation hydrated (existing=%s)",
+    async (existing) => {
+      const f = fixture();
+      let release!: (value: null) => void;
+      if (existing)
+        f.gateway.ingest("session-1", {
+          ...f.event,
+          id: "bootstrap" as EventId,
+          type: SessionEventType.SessionCreated,
+          payload: { mode: "build" },
+        });
+      Object.assign(internal(f.gateway).host, {
+        getSessionUsageSeed: () =>
+          new Promise<null>((resolve) => {
+            release = resolve;
+          }),
+      });
+      const old = internal(f.gateway)
+        .hydratePublisher("session-1")
+        .catch((error) => error);
+      await microtasks();
+      f.gateway.disposeSession("session-1");
+      f.gateway.ingest("session-1", {
+        ...f.event,
+        id: "replacement" as EventId,
+        type: SessionEventType.SessionCreated,
+        payload: { mode: "build" },
+      });
+      release(null);
+      expect(await old).toBeInstanceOf(Error);
+      expect(
+        (f.gateway as unknown as { hydratedSessions: Set<string> }).hydratedSessions.has(
+          "session-1",
+        ),
+      ).toBe(false);
+      f.gateway.dispose();
+    },
+  );
+  it("real adapter cancellation before strict reports gateway false and leaves generic waiter untouched", async () => {
+    const f = fixture();
+    const outcomes: WorkflowHostObservationOutcome[] = [];
+    const event = { ...f.event, sequenceNumber: 2 };
+    const adapter = createWorkflowHostObservationAdapter({
+      isCurrent: () => true,
+      now: () => Date.now(),
+      verifyStored: async (input) => input,
+      ensureCommit: (input, owner) =>
+        f.gateway.ensureWorkflowHostObservationCommit(
+          "session-1",
+          { eventId: input.id, runId: "host-run" },
+          owner,
+        ),
+      report: (outcome) => outcomes.push(outcome),
+    });
+    try {
+      adapter.accept(event, () => f.gateway.ingest("session-1", event));
+      await microtasks();
+      adapter.dispose();
+      await microtasks();
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toMatchObject({ strictAttempted: false, reasonCode: "disposed" });
+      expect(f.load).not.toHaveBeenCalled();
+      f.gateway.ingest("session-1", {
+        ...f.event,
+        id: "first" as EventId,
+        type: SessionEventType.SessionCreated,
+        payload: { mode: "build" },
+      });
+      await expect(
+        f.gateway.waitForProjectionEventCommit("session-1", event.id),
+      ).resolves.toBeUndefined();
+    } finally {
+      adapter.dispose();
+      f.gateway.dispose();
+    }
+  });
+  it("strict delivery fault is reported safely after commit and is never silently completed", async () => {
+    const f = fixture();
+    const onError = vi.fn();
+    Object.assign(internal(f.gateway).host, {
+      getSessionWorkspaceId: () => {
+        throw new Error("private-delivery-marker");
+      },
+      onError,
+    });
+    try {
+      const failure = await f.ensure().catch((error) => error);
+      expect(failure).toMatchObject({
+        reasonCode: "delivery_fault",
+        phase: "delivery",
+        strictAttempted: true,
+      });
+      expect(String(failure)).not.toContain("private-delivery-marker");
+      expect(onError).not.toHaveBeenCalled();
+      expect(
+        internal(f.gateway).publishers.get("session-1")?.getSnapshot().workflowRuns?.runs[0]
+          ?.status,
+      ).toBe("errored");
+      await expect(f.ensure()).rejects.toMatchObject({
+        reasonCode: "delivery_fault",
+        strictAttempted: true,
+      });
+      expect(f.load).toHaveBeenCalledTimes(1);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("strict raw transport offset uses final adopted initialization sequence", async () => {
+    const f = fixture();
+    const bootstrap = {
+      ...f.event,
+      id: "bootstrap" as EventId,
+      type: SessionEventType.SessionCreated,
+      payload: { mode: "build" },
+    };
+    f.gateway.ingest("session-1", bootstrap);
+    const publisher = internal(f.gateway).publishers.get("session-1")!;
+    publisher.setRuntimeInitialization({ status: "ready", attemptId: "init" });
+    const stored = { ...f.event, sequenceNumber: 2 };
+    f.load.mockResolvedValue({
+      events: [bootstrap, stored],
+      verifiedTarget: stored,
+      sourceEventSeq: 2,
+      synthesized: false,
+    });
+    try {
+      await f.ensure();
+      const adoptedSeq = publisher.getSnapshot().seq;
+      f.gateway.ingest("session-1", { ...f.event, id: "later-host" as EventId, sequenceNumber: 3 });
+      expect(publisher.getSnapshot().seq).toBeGreaterThan(adoptedSeq);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("normal flight reserves its slot before a synchronous loader handoff can reenter gateway", async () => {
+    const f = fixture();
+    let observationPromise!: ReturnType<typeof f.ensure>;
+    let strictDuringNormalLoad = false;
+    internal(f.gateway).host.loadPersistedEvents = async () => {
+      observationPromise = f.ensure();
+      strictDuringNormalLoad = f.load.mock.calls.length > 0;
+      return { events: [], synthesized: false, sourceEventSeq: 0 };
+    };
+    try {
+      await internal(f.gateway).hydratePublisher("session-1");
+      await observationPromise;
+      expect(strictDuringNormalLoad).toBe(false);
+      expect(f.load).toHaveBeenCalledTimes(1);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("normal admission must also prove the target recovery error, not merely errored status", async () => {
+    const f = fixture();
+    const bootstrap = {
+      ...f.event,
+      id: "bootstrap" as EventId,
+      type: SessionEventType.SessionCreated,
+      payload: { mode: "build" },
+    };
+    f.gateway.ingest("session-1", bootstrap);
+    const publisher = internal(f.gateway).publishers.get("session-1")!;
+    const original = publisher.ingest.bind(publisher);
+    const spy = vi.spyOn(publisher, "ingest").mockImplementationOnce((event) =>
+      original({
+        ...event,
+        payload: {
+          ...(event.payload as object),
+          payload: {
+            status: "errored",
+            error: { code: "RecoveryUncertain", message: "wrong prior error" },
+          },
+        },
+      }),
+    );
+    const stored = { ...f.event, sequenceNumber: 2 };
+    f.gateway.ingest("session-1", stored);
+    spy.mockRestore();
+    f.load.mockResolvedValue({
+      events: [bootstrap, stored],
+      verifiedTarget: stored,
+      sourceEventSeq: 2,
+      synthesized: false,
+    });
+    try {
+      const promise = f.ensure();
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(promise).resolves.toEqual({ strictAttempted: true });
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B06 actual normal admission returns false without strict", async () => {
+    const f = fixture();
+    try {
+      f.gateway.ingest("session-1", f.event);
+      await expect(f.ensure()).resolves.toEqual({ strictAttempted: false });
+      expect(f.load).not.toHaveBeenCalled();
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B13 strict successful history survives completed operation removal", async () => {
+    const f = fixture();
+    try {
+      await expect(f.ensure()).resolves.toEqual({ strictAttempted: true });
+      await expect(f.ensure()).resolves.toEqual({ strictAttempted: true });
+      expect(f.load).toHaveBeenCalledTimes(1);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B13 permanent failure preserves reason and consumes strict only once", async () => {
+    const f = fixture();
+    f.load.mockRejectedValue(new Error("private-marker"));
+    try {
+      await expect(f.ensure()).rejects.toMatchObject({
+        strictAttempted: true,
+        reasonCode: "strict_load_failed",
+      });
+      await expect(f.ensure()).rejects.toMatchObject({
+        strictAttempted: true,
+        reasonCode: "strict_load_failed",
+      });
+      expect(f.load).toHaveBeenCalledTimes(1);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B14 abort rejects original Promise before fallback while loader is pending", async () => {
+    const f = fixture();
+    let release!: (value: Awaited<ReturnType<typeof f.load>>) => void;
+    f.load.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    try {
+      const order: string[] = [];
+      const promise = f.ensure();
+      const caught = promise.catch((error) => {
+        order.push("gateway");
+        return error;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      f.abort.abort("disposed");
+      queueMicrotask(() => order.push("fallback"));
+      expect(await caught).toMatchObject({ strictAttempted: true, reasonCode: "disposed" });
+      expect(order).toEqual(["gateway", "fallback"]);
+      release({
+        events: [f.event],
+        synthesized: false,
+        sourceEventSeq: 1,
+        verifiedTarget: f.event,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        (f.gateway as unknown as { publishers: Map<string, ConversationTopicPublisher> }).publishers
+          .get("session-1")
+          ?.getSnapshot().workflowRuns?.runs ?? [],
+      ).toEqual([]);
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B14 pre-abort reports authoritative false", async () => {
+    const f = fixture();
+    f.abort.abort("disposed");
+    try {
+      await expect(f.ensure()).rejects.toMatchObject({
+        strictAttempted: false,
+        reasonCode: "disposed",
+      });
+      expect(f.load).not.toHaveBeenCalled();
+    } finally {
+      f.gateway.dispose();
+    }
+  });
+  it("B10 strict cannot use synthesized target without direct raw identity", async () => {
+    const f = fixture();
+    f.load.mockResolvedValue({
+      events: [f.event],
+      synthesized: true,
+      sourceEventSeq: 1,
+      verifiedTarget: undefined as unknown as SessionEvent,
+    });
+    try {
+      await expect(f.ensure()).rejects.toMatchObject({
+        reasonCode: "identity_unverifiable",
+        strictAttempted: true,
+      });
+    } finally {
+      f.gateway.dispose();
+    }
   });
 });

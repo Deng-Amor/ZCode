@@ -89,6 +89,7 @@ import type {
   PersonaSpec,
 } from "@zcode/dynamic-workflow";
 import { toProtocolEvent } from "./dynamic-workflow-run-launch.js";
+import { toHostReconciliationProgress } from "./dynamic-workflow-run-progress-payload.js";
 import { readWorkflowArtifactBytes } from "./dynamic-workflow-run-artifact-read.js";
 import { replayRunProgress } from "./dynamic-workflow-run-replay.js";
 import { listArtifactItemsFrom } from "./dynamic-workflow-run-artifact-queries.js";
@@ -269,6 +270,11 @@ export interface DynamicWorkflowRunServiceDeps {
     progress: DynamicWorkflowRunProgressPayload,
     routing: { parentSessionId?: string },
   ) => void;
+  /** 宿主权威修正沿同一父会话观察链发布，不能伪造 Engine onRunEvent。 */
+  onRunReconciled?: (
+    progress: DynamicWorkflowRunProgressPayload,
+    routing: { parentSessionId?: string },
+  ) => void;
   logger?: Logger;
   /** 注入并发度探测，供 caps 默认值测试固定双核（地板必须是 1）。 */
   availableParallelism?: () => number;
@@ -356,10 +362,6 @@ export function createDynamicWorkflowRunService(
   /** 每个 run 的补全串行链（dynamic-workflow-run-fill.ts 文件头）；排空即删键。 */
   const fillQueues = new Map<string, Promise<unknown>>();
 
-  // 构造即收敛：本实例名下此刻零个在飞 run，所以本会话的非终态行都是死进程的遗物。
-  // 见文件头不变式 4 与 {@link reconcileOrphanRuns}。
-  reconcileOrphanRuns(deps);
-
   /**
    * 本进程的默认并发 D（docs/dynamic-workflow/concurrency.md「Two bounds on a run」）。
    * 与进程级治理器的桶起点同一份实现（决策 30）：run 的默认上界与桶的起点永远对得上。
@@ -385,10 +387,12 @@ export function createDynamicWorkflowRunService(
 
   // 生命周期簿记（结算 / 关闭 / 关闭闸门 / 外来终态行留痕；文件头不变式 6、7）的实现体在
   // dynamic-workflow-run-lifecycle.ts：它们只借用这里的注册表与 journal，经窄依赖递过去。
+  let onRunReconciled: DynamicWorkflowRunServiceDeps["onRunReconciled"];
   const {
     countLiveRuns,
     subscribeRunSettled,
     trackSettlement,
+    reconcileUncertainRecovery,
     close,
     assertOpen,
     noteForeignTerminalRow,
@@ -400,7 +404,16 @@ export function createDynamicWorkflowRunService(
       ? {}
       : { registerResidencyBlockingWork: deps.registerResidencyBlockingWork }),
     runs,
+    onRunReconciled: (notice) =>
+      onRunReconciled?.(toHostReconciliationProgress(notice), {
+        parentSessionId: deps.parentSessionId,
+      }),
   });
+
+  // lifecycle 已就绪而入口尚未开放，构造孤儿与操作时恢复共用同一个收敛 owner。
+  reconcileOrphanRuns({ ...deps, reconcileUncertainRecovery });
+  // 构造期尚无父 runtime，孤儿由首次 cold row 物化；仅在入口开放后发布 live 修正。
+  onRunReconciled = deps.onRunReconciled;
 
   // 两条入口（submit / resume）的实现体在 dynamic-workflow-run-submit.ts：它们只借用这里的
   // 注册表、停驻表、caps 与结算簿记，经 ctx 显式递过去，本文件不再复制那两段。
@@ -412,6 +425,7 @@ export function createDynamicWorkflowRunService(
     escalations,
     caps,
     trackSettlement,
+    reconcileUncertainRecovery,
   };
 
   return {

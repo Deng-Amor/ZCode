@@ -5,11 +5,13 @@ import type { ResolvedAiSdkModelRetryOptions } from "./retry-policy.js";
  * 重试预算档位的判定。
  *
  * 「无上限」**只**放宽瞬态失败的放弃条件：runner 的 attempt 循环、失败后「还能不能再试」两处闸门；
- * 退避曲线（2s→60s、jitter、Retry-After 优先）、`isRetryableFailure` 的分类、
+ * 退避曲线（2s→60s、jitter、Retry-After 优先）、workflow 策略表的分类、
  * `emittedRetryBoundaryEvent` 之后不重试、空补全重试与 compact 路径一律不动。
  *
  * 「单次尝试」只把本次请求的 `maxAttempts` 收敛为 1：runner 两处闸门与 empty completion 重试都读
  * 同一个 `retry.maxAttempts`，因此瞬态失败首次即上抛；鉴权刷新/签名修复的额外尝试不占预算，语义不变。
+ *
+ * workflow-finite 沿用解析后的 maxAttempts；只有错误分类采用 workflow 策略，不放宽次数闸门。
  */
 
 /** 状态事件里 `maxAttempts` 表示「无上限」的哨兵（Infinity 不可序列化，0 不占用合法计数）。 */

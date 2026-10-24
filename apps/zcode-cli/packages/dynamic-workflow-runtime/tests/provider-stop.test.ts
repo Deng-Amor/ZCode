@@ -5,8 +5,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { WorkflowError } from "@zcode/dynamic-workflow";
-import { runScript } from "./helpers.js";
+import { InMemoryJournalStore, WorkflowError } from "@zcode/dynamic-workflow";
+import { runScript, askSpecsFor, TEST_CWD } from "./helpers.js";
+import { runWorkflowScript } from "../src/index.js";
+import { AutoDriver } from "./auto-driver.js";
 
 const PROVIDER_STOP = new WorkflowError("ProviderStop", "Sign-in to BigModel expired.", {
   providerStop: {
@@ -60,4 +62,38 @@ describe("provider stop 过界", () => {
       },
     ]);
   });
+});
+
+it("harness sink 把 ask stall 送进真实 engine journal，脚本仍正常完成", async () => {
+  const journal = new InMemoryJournalStore();
+  const scriptText = 'const a = agent("a", "Do things."); return await a.ask("go");';
+  const settlement = await runWorkflowScript({
+    scriptText,
+    cwd: TEST_CWD,
+    runId: "ask-stall",
+    caps: { maxConcurrency: 2 },
+    askSpecs: askSpecsFor(scriptText),
+    validate: () => [],
+    makeDriver: (sink) => {
+      const driver = new AutoDriver(journal, {
+        onStartAsk: (instance) => {
+          sink.askStalled(instance, { sinceMs: 1_200_000, reason: "timeout" });
+        },
+      });
+      driver.attach(sink);
+      return driver;
+    },
+  });
+  expect(settlement.status).toBe("completed");
+  const events = journal.listEvents("ask-stall", { types: "all", reportItems: "all" });
+  expect(
+    events.filter(({ event }) => event.type === "node-stalled").map(({ event }) => event),
+  ).toEqual([
+    {
+      type: "node-stalled",
+      instance: { siteId: "ask#1", ordinal: 1 },
+      sinceMs: 1_200_000,
+      reason: "timeout",
+    },
+  ]);
 });

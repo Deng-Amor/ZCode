@@ -10,7 +10,10 @@ import type {
   WorkflowLaunchMeta,
 } from "@zcode/contracts";
 import { SessionEventType } from "@zcode/contracts";
-import type { AttachmentRef } from "@zcode/shared/zcode-protocol-v4";
+import {
+  parseWorkflowRunProgressObservation,
+  type AttachmentRef,
+} from "@zcode/shared/zcode-protocol-v4";
 
 export type CanonicalConversationVisibility = "visible" | "modelOnly" | "stateOnly";
 export type CanonicalConversationOrigin =
@@ -156,6 +159,13 @@ export function normalizeConversationEvent(
   event: SessionEvent,
   context: NormalizeConversationEventContext = {},
 ): CanonicalConversationFact {
+  if (event.type === SessionEventType.DynamicWorkflowRunProgress) {
+    const observation = parseWorkflowRunProgressObservation(event.payload);
+    // 非法历史不能在共享 reducer 返回 null 后继续推进投影水位；此处先于任何状态写入。
+    if (observation.kind === "invalid") {
+      throw new Error(`Invalid workflow run observation: ${observation.reasonCode}`);
+    }
+  }
   const runtimeTurnId = runtimeTurnIdOf(event);
   const productTurnId = context.productTurnId ?? runtimeTurnId;
   if (event.type === SessionEventType.TurnStarted) {

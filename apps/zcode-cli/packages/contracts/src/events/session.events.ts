@@ -1010,15 +1010,17 @@ export type BackgroundTaskCompletedPayload = BackgroundTaskPayloadBase & {
 
 /**
  * 一条 workflow run 进度事件（父会话）。字段与 {@link DynamicWorkflowRunEvent} 同形——
- * **一次序列化、两个消费者**：`listEvents` 的事件页与这里的会话事件用同一个有界载荷，
+ * **引擎来源一次序列化、两个消费者**：`listEvents` 的事件页与这里的会话事件用同一个有界载荷，
  * 读端因此不需要两套解释规则。`type` 已被会话事件信封占用，故引擎事件种类叫 `eventType`。
+ * 显式宿主修正仅是父会话观察，不进 Engine journal；其严格形状由 shared 公共 parser 校验。
  */
 export interface DynamicWorkflowRunProgressPayload {
   runId: string;
   /** 发起这次 run 的 CreateWorkflow 工具调用（工具卡 → 详情页的关联键）。 */
   toolCallId?: ToolCallId | string;
-  /** journal sequence（`appendEvent` 单调分配）；事件日志的 cursor 与它同一把尺。 */
+  /** journal sequence；显式 host-reconciliation 固定 0，表示无 journal cursor。父会话 raw sequence 另行正常分配。 */
   sequence: number;
+  observationSource?: "host-reconciliation";
   /** 引擎事件种类：run-started / actor-created / node-* / usage-updated / log / report / phase-entered / run-settled。 */
   eventType: string;
   payload: Record<string, unknown>;

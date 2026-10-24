@@ -41,9 +41,9 @@ interface ActorModelActivityHandlers {
   /** 该 ask 的模型请求真的发出去了（首个请求、或一段等待之后的那次）。 */
   onExecuting(): void;
   /** 本 actor 的任一模型请求（turn 或工具侧）成功完成——run 级 stall 时钟的归零信号。 */
-  onRequestCompleted?(): void;
+  onRequestCompleted?(instance: InstanceRef | undefined): void;
   /** runner 排定了一次重试（签名修复 / 鉴权刷新除外）——run 级 stall 时钟的上膛信号。 */
-  onRetryScheduled?(reason: string): void;
+  onRetryScheduled?(reason: string, instance: InstanceRef | undefined): void;
   /**
    * 在飞 ask 的子代理即将执行一个会改写工作区的工具（每个 ask 至多一次；实例由本模块按 `live` 解析，
    * 不在飞就不报）。引擎据此关闭 amend-resume 的导入缓存。
@@ -120,6 +120,9 @@ export function createActorModelActivity(input: {
   seat?: { gate: WorkflowRunSeatGate; key: string };
 }): ActorModelActivity {
   const chains = new Map<string, Chain>();
+  // typed accept 可早于工具侧模型请求收尾。换 ask 时留下旧在飞链的墓碑，避免迟到节拍
+  // 被现时 live() 错配给下一实例；终态和退订回收，只覆盖尚未结束的旧请求。
+  const retiredChains = new Set<string>();
   let executing = false;
   /** 上一条已报出的等待信息；executing 一报即清。同一段等待里内容相同的等待只报一次。 */
   let reportedWait: AskWaitInfo | undefined;
@@ -170,7 +173,8 @@ export function createActorModelActivity(input: {
     if (!chains.delete(key) || anyExecuting()) return;
     let latest: Chain | undefined;
     for (const chain of chains.values()) {
-      if (chain.wait !== undefined && (latest === undefined || chain.waitSeq > latest.waitSeq)) latest = chain;
+      if (chain.wait !== undefined && (latest === undefined || chain.waitSeq > latest.waitSeq))
+        latest = chain;
     }
     if (latest?.wait !== undefined) reportWaiting(latest.wait);
   };
@@ -201,6 +205,7 @@ export function createActorModelActivity(input: {
   return {
     admission,
     reset: () => {
+      for (const key of chains.keys()) if (key) retiredChains.add(key);
       chains.clear();
       executing = false;
       reportedWait = undefined;
@@ -223,9 +228,25 @@ export function createActorModelActivity(input: {
       if (typeof (runtime as Partial<AgentRuntime>).subscribeEvents !== "function") return;
       unsubscribeEvents = runtime.subscribeEvents({
         onSessionEvent: (event: SessionEvent) => {
-          if (event.type !== SessionEventType.ModelNetworkStatus || event.sessionId !== sessionId) return;
+          if (event.type !== SessionEventType.ModelNetworkStatus || event.sessionId !== sessionId)
+            return;
           const status = event.payload as ModelNetworkStatusEvent;
           const key = chainKey(status);
+          if (retiredChains.has(key)) {
+            // run 级仍按原合同观察所有 actor 的节拍；只有 ask 归属必须拒绝迟到链。
+            if (status.type === "model_request_completed") {
+              handlers.onRequestCompleted?.(undefined);
+              retiredChains.delete(key);
+            } else if (
+              status.type === "model_retry_scheduled" &&
+              !NON_FAILURE_RETRY_REASONS.has(status.reason)
+            ) {
+              handlers.onRetryScheduled?.(status.reason, undefined);
+            } else if (status.type === "model_request_failed" && !status.retryable) {
+              retiredChains.delete(key);
+            }
+            return;
+          }
           switch (status.type) {
             case "model_request_queued":
               setWaiting(key, "queued", { cause: "slot" });
@@ -237,7 +258,7 @@ export function createActorModelActivity(input: {
               return;
             case "model_retry_scheduled": {
               if (NON_FAILURE_RETRY_REASONS.has(status.reason)) return;
-              handlers.onRetryScheduled?.(status.reason);
+              handlers.onRetryScheduled?.(status.reason, live?.());
               setWaiting(key, "backoff", {
                 cause: "backoff",
                 reason: status.reason,
@@ -248,7 +269,7 @@ export function createActorModelActivity(input: {
               return;
             }
             case "model_request_completed":
-              handlers.onRequestCompleted?.();
+              handlers.onRequestCompleted?.(live?.());
               endChain(key);
               return;
             case "model_request_failed":
@@ -262,6 +283,8 @@ export function createActorModelActivity(input: {
       });
     },
     unsubscribe: () => {
+      retiredChains.clear();
+      chains.clear();
       toolActivity.unsubscribe();
       unsubscribeEvents?.();
       unsubscribeEvents = undefined;

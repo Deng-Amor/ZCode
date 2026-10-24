@@ -25,7 +25,8 @@ export async function resolveDefaultCustomCommandRoots(
   const resolvedWorkingDirectory = resolve(workingDirectory);
   const roots: CustomCommandRoot[] = [];
   const includeZcode = options.includeZcodeCommands ?? true;
-  const home = options.homeDirectory ?? homedir();
+  // 与桌面用户规则、技能共用显式 home，避免读取另一安装实例的全局命令。
+  const home = options.homeDirectory ?? (process.env.ZCODE_DESKTOP_HOME_DIR?.trim() || homedir());
   let priority = 0;
   const nextPriority = () => {
     priority += PRIORITY_STEP;

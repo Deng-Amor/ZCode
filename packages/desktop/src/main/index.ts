@@ -1,12 +1,15 @@
+import "./desktopEarlyDataBaseDirBootstrap.js";
+import { resolveBootstrapSettingsFile } from "./desktopDataBaseDirBootstrap.js";
 import { pathToFileURL } from "node:url";
 import {
   createControllerApplication,
   createEncryptedPlatformSessionStore,
 } from "@zcode/services/confidential-controller";
+import { createControllerLockedStore } from "@zcode/services/controller-locked-store";
 import { installRequestSecurityDiagnostics } from "./request-security-edition/index.js";
 import { createLocalTtftExporter } from "./localTtftExporter.js";
+import { createFeedbackDiagnosticBundleBuilder } from "./ccode-platform-runtime-wiring/diagnostic-builder.js";
 /* eslint-disable max-lines */
-import "./desktopEarlyDataBaseDirBootstrap.js";
 import "./desktopEarlyChromiumHardwareAccelerationBootstrap.js";
 import { powerMonitor, powerSaveBlocker, safeStorage } from "electron";
 import { crashCapturePaths } from "./appCrashCaptureBootstrap.js";
@@ -117,6 +120,7 @@ import { TaskRealtimeBus } from "./taskRealtimeBus.js";
 import { createAppLaunchGate } from "./appLaunchGate.js";
 import { createAppLaunchCoordinator } from "./appLaunchCoordinator.js";
 import { createAppTelemetryRuntime } from "./appTelemetryRuntime.js";
+import { createDesktopCcodePlatformRuntimeWiring } from "./ccode-platform-runtime-wiring/index.js";
 import { createRendererActionTraceBroker } from "./rendererActionTraceBroker.js";
 import { createRendererActionTraceExporter } from "./rendererActionTraceExporter.js";
 import { registerRendererActionTraceIpc } from "./rendererActionTraceIpc.js";
@@ -575,7 +579,8 @@ async function runBrowserCommandOnView(params: {
 let currentDesktopZoomLevel = 0;
 let currentDesktopWindowSize: DesktopWindowSize | undefined;
 const preloadPath = join(import.meta.dirname, "../preload/index.cjs");
-const settingsFile = join(homedir(), ".zcode", "v2", "setting.json");
+// 启动恢复必须读取品牌设置根，否则会打开原版 ZCode 的上次工作区。
+const settingsFile = resolveBootstrapSettingsFile();
 let activeAppShutdownPolicy = resolveAppShutdownPolicy("normal", process.platform);
 let activeAppShutdownKind: AppShutdownKind | null = null;
 const WINDOWS_AGENT_FORCE_KILL_TIMEOUT_MS = 2_000;
@@ -662,6 +667,27 @@ let appQuitPreparationInFlight: Promise<void> | null = null;
 let hasPreparedAppQuit = false;
 const windowWorkspaceMap = new Map<number, Set<string>>();
 // 应用级内存所有者；仅内置验签公钥，私钥和核心正文由管理员及中台保管。
+const ccodeApiBaseUrl = "https://dp.sccsai.com/admin-api/";
+const ccodeControllerTrust = {
+  skillId: "controller",
+  name: "总控派单",
+  minimumVersion: 1,
+  publicKeyPem:
+    "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA4Fice+HrcSUzJg9NCLgKtvjYFwvV1ldQwDfBOETEPMA=\n-----END PUBLIC KEY-----\n",
+} as const;
+const ccodeControllerLockedStore = createControllerLockedStore({
+  storageDirectory: join(app.getPath("userData"), "ccode-controller", "locked"),
+  encryption: {
+    isAvailable: async () => {
+      await app.whenReady();
+      return safeStorage.isEncryptionAvailable() &&
+        (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text");
+    },
+    encrypt: async (plain) => new Uint8Array(safeStorage.encryptString(Buffer.from(plain).toString("utf8"))),
+    decrypt: async (cipher) => new TextEncoder().encode(safeStorage.decryptString(Buffer.from(cipher))),
+  },
+  trust: ccodeControllerTrust,
+});
 const ccodeControllerApplication = createControllerApplication({
   sessionStore: createEncryptedPlatformSessionStore({
     filePath: join(app.getPath("userData"), "ccode-account", "session.enc"),
@@ -677,18 +703,18 @@ const ccodeControllerApplication = createControllerApplication({
       decrypt: async (ciphertext) => safeStorage.decryptString(Buffer.from(ciphertext)),
     },
   }),
-  apiBaseUrl: "https://dp.sccsai.com/admin-api/",
-  trusts: [
-    {
-      skillId: "controller",
-      name: "总控派单",
-      minimumVersion: 1,
-      publicKeyPem:
-        "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA4Fice+HrcSUzJg9NCLgKtvjYFwvV1ldQwDfBOETEPMA=\n-----END PUBLIC KEY-----\n",
-    },
-  ],
+  apiBaseUrl: ccodeApiBaseUrl,
+  trusts: [ccodeControllerTrust],
+  lockedStore: ccodeControllerLockedStore,
 });
-app.on("will-quit", () => ccodeControllerApplication.dispose());
+const ccodePlatform = createDesktopCcodePlatformRuntimeWiring({ account: ccodeControllerApplication.account, storageDirectory: join(app.getPath("userData"), "ccode-platform"), apiBaseUrl: ccodeApiBaseUrl, commandSignerPublicKeyPem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA4Fice+HrcSUzJg9NCLgKtvjYFwvV1ldQwDfBOETEPMA=\n-----END PUBLIC KEY-----\n", homeDirectory: app.getPath("home"), workingDirectory: process.cwd(), diagnosticArchiveBuilder: createFeedbackDiagnosticBundleBuilder({ outputRootDir: join(app.getPath("userData"), "ccode-diagnostics") }) });
+// 进程崩溃恢复（spec §6A 错误源②）：子进程非受控退出即视为崩溃恢复信号上报诊断触发器；
+// clean-exit/killed 为受控终止不上报（判据对齐 desktopCrashCapture.resolveProcessGoneLogLevel）。
+app.on("child-process-gone", (_event, details) => {
+  if (details.reason === "clean-exit" || details.reason === "killed") return;
+  ccodePlatform.reportDiagnosticErrorTrigger("crash_recovery");
+});
+app.on("will-quit", () => { void ccodePlatform.dispose(); void ccodeControllerApplication.dispose(); });
 ccodeControllerApplication.account.onStateChanged(() => {
   for (const win of getMainApplicationWindows()) {
     if (!win.webContents.isDestroyed()) {
@@ -2126,7 +2152,8 @@ app.whenReady().then(async () => {
   try {
     bootstrapSettings = await mainSettingService.get();
     if (bootstrapSettings.dataBaseDir) {
-      setDataBaseDir(bootstrapSettings.dataBaseDir);
+      // 安装版沿用早期入口已校验的品牌数据根，防止旧 HOME 设置在 ready 时重新接回共享库。
+      setDataBaseDir(app.isPackaged ? process.env.ZCODE_DATA_BASE_DIR! : bootstrapSettings.dataBaseDir);
     }
     if (bootstrapSettings.locale) {
       loadedBootstrapLocale = true;
@@ -2249,11 +2276,9 @@ app.whenReady().then(async () => {
   logWindowsBundledRuntimeIntegrityDiagnostic();
 
   // 启动自动更新检查（后台执行，不阻塞主界面）
-  // Preview 身份无论连接哪个后端都不自动更新：stable feed 上只分发正式 ZCode 安装包，
-  // 不向 Preview 渠道提供更新。构建期未启用自动更新时同样不更新
-  // （见 docs/desktop/build-time-optional-capabilities.md）。
+  // CCode Preview 使用独立官网清单；当前仅发布 Windows x64 更新包。
   void initAutoUpdater({
-    enabled: ZCODE_PRODUCT_FLAVOR === "production" && ZCODE_AUTO_UPDATE_ENABLED,
+    enabled: process.platform === "win32" && process.arch === "x64" && ZCODE_AUTO_UPDATE_ENABLED,
     onBeforeQuitAndInstall: async () => {
       notifyStabilityLifecycle("update_install");
       await prepareAppQuit("auto-update quitAndInstall", "update-install");

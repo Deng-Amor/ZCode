@@ -141,6 +141,9 @@ import type { ProviderStopDetails, RunStallInfo } from "./run-terminal.js";
 
 export type { ProviderStopDetails, RunStallInfo };
 
+/** 单 ask 的模型重试观察，不携带 run 并发或终态。 */
+export type AskStallInfo = Pick<RunStallInfo, "sinceMs" | "reason">;
+
 // ————————————————————————————————————————————————————————————————
 // 结构化错误（errors are first-class）
 // ————————————————————————————————————————————————————————————————
@@ -428,6 +431,8 @@ export interface WorkflowReportSink {
   stopRun(error: WorkflowError): void;
   /** run 级停滞观察：引擎只 `record()`。 */
   runStalled(info: RunStallInfo): void;
+  /** 指定 live ask 的纯观察，不改变调度或 run 停滞状态。 */
+  askStalled(instance: InstanceRef, info: AskStallInfo): void;
   /**
    * 三个纯观察：引擎只 `record()`，不做任何决策。
    * run 已结算 / 节点已结算后到达的调用被忽略。
@@ -623,6 +628,7 @@ export type RunEvent =
    * （`executing` 由此成为**可观察**相位），不改变节点的 journal 记录
    * （不写 dwf_node）。
    */
+  | ({ type: "node-stalled"; instance: InstanceRef } & AskStallInfo)
   | ({ type: "node-waiting"; instance: InstanceRef } & AskWaitInfo)
   | { type: "node-executing"; instance: InstanceRef }
   | ({ type: "concurrency-changed" } & ConcurrencyChange)
@@ -680,7 +686,12 @@ export type RunEvent =
    * （`cause: "world-run"`）。每个 run 最多一条；修订 run 崩溃后 resume 据它恢复「门已关」——这是
    * 关门的**唯一**事实来源，不再由「曾有 ask live」推断。非修订 run 没有表可关，不发。
    */
-  | { type: "import-cache-closed"; instance: InstanceRef; cause: ImportCloseCause; actorName?: string }
+  | {
+      type: "import-cache-closed";
+      instance: InstanceRef;
+      cause: ImportCloseCause;
+      actorName?: string;
+    }
   /**
    * 控制流经过了一个 `phase("…")` 标记。**无站点、无 journal 行、无 driver 往返**——标记不是一步工作，它只是
    * 「跑到哪了」的一个刻度。`name` 是作者的原词（去两端空白，与分析器铸造阶段 id 的键同一）；

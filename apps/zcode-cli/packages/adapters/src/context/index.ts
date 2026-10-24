@@ -243,7 +243,8 @@ async function findDefaultUserInstructionFile(
 }
 
 function resolveUserHomeDir(env: NodeJS.ProcessEnv): string {
-  const envHome = env.HOME?.trim() || env.USERPROFILE?.trim();
+  // 桌面数据隔离不能同时加载原版全局规则；外部 CLI 的真实 HOME 保持原样。
+  const envHome = env.ZCODE_DESKTOP_HOME_DIR?.trim() || env.HOME?.trim() || env.USERPROFILE?.trim();
   return envHome && envHome.length > 0 ? envHome : homedir();
 }
 

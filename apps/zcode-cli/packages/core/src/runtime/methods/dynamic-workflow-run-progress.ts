@@ -2,14 +2,18 @@ import {
   SessionEventType,
   type DynamicWorkflowRunProgressPayload,
   type TraceContext,
+  type SessionEvent,
 } from "../deps.js";
 import {
   formatWorkflowEscalationNotification,
   formatWorkflowStallNotification,
+  formatWorkflowAskStallNotification,
 } from "../../runtime-task/notification.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { noteWorkflowReminderRunEvent } from "./dynamic-workflow-blocked-reminder.js";
+import { appendEventWithHostStoredHandoff } from "./events.js";
 import { notifyHoleReached } from "./dynamic-workflow-run-hole-notification.js";
+import { parseWorkflowRunProgressObservation } from "@zcode/shared/zcode-protocol-v4";
 
 /**
  * 把一条 workflow run 进度事件追加到**父会话**（run 自己没有会话）。
@@ -28,6 +32,22 @@ export async function recordDynamicWorkflowRunProgress(
   input: DynamicWorkflowRunProgressPayload & { traceContext?: TraceContext },
 ): Promise<void> {
   const { traceContext: provided, ...payload } = input;
+  const observation = parseWorkflowRunProgressObservation(payload);
+  if (observation.kind === "invalid") {
+    // 来源损坏不可降级 Engine 事件；先拒绝，避免追加、提醒和模型可见通知产生副作用。
+    this.logger?.warn?.("Invalid workflow run observation rejected", {
+      event: "dynamic_workflow.run_progress.invalid_observation",
+      module: "core.runtime",
+      sessionId: this.sessionId,
+      runId:
+        typeof payload.runId === "string" && /^[A-Za-z0-9-]{1,128}$/.test(payload.runId)
+          ? payload.runId
+          : "invalid-run-id",
+      sourceClassification: "present",
+      reasonCode: observation.reasonCode,
+    });
+    throw new Error(`Invalid workflow run observation: ${observation.reasonCode}`);
+  }
   const traceContext = provided ?? this.rootTraceContext;
   await this.appendEvent(
     this.createEvent(
@@ -40,11 +60,61 @@ export async function recordDynamicWorkflowRunProgress(
   // 开集变了（提问 / 作答 / 到达留白 / 补全）：这个 run 的「欠着决定」提醒重新计数。先于下面的通知，
   // 这样会话正闲着时空闲钟先归零，再被通知唤起的那一轮停掉。
   noteWorkflowReminderRunEvent(this, payload);
+  if (observation.kind === "host-reconciliation") return;
   notifyEscalationRaised.call(this, payload, traceContext);
   notifyRunStalled.call(this, payload, traceContext);
+  notifyAskStalled.call(this, payload, traceContext);
   // 留白（dynamic-workflow-run-hole-notification.ts）：要读一次快照补齐类型 / 草稿 / 前后阶段，所以是
   // 三条里唯一异步的一条；事件已经落库，等它只是等通知入队。
   await notifyHoleReached.call(this, payload, traceContext);
+}
+
+/** 单 ask 观察走普通后台文本，不能借用闭集里的 run stall 元数据。 */
+function notifyAskStalled(
+  this: AgentRuntimeInternal,
+  payload: DynamicWorkflowRunProgressPayload,
+  traceContext: TraceContext,
+): void {
+  if (payload.eventType !== "node-stalled") return;
+  const { sinceMs, instance } = payload.payload;
+  const ref =
+    typeof instance === "object" && instance !== null
+      ? (instance as Record<string, unknown>)
+      : undefined;
+  const siteId = ref?.siteId;
+  const ordinal = ref?.ordinal;
+  if (
+    typeof sinceMs !== "number" ||
+    !Number.isFinite(sinceMs) ||
+    sinceMs < 0 ||
+    typeof siteId !== "string" ||
+    siteId.trim().length === 0 ||
+    typeof ordinal !== "number" ||
+    !Number.isSafeInteger(ordinal) ||
+    ordinal < 1
+  ) {
+    this.logger?.warn?.("Dynamic workflow ask stall notification skipped: malformed payload", {
+      event: "dynamic_workflow.ask_stall.notification_skipped",
+      module: "core.runtime",
+      runId: payload.runId,
+      sequence: payload.sequence,
+    });
+    return;
+  }
+  const runLabel = this.runtimeTaskRegistry.get(payload.runId)?.description ?? payload.runId;
+  const reason = stringField(payload.payload, "reason");
+  this.enqueueBackgroundTaskNotification({
+    originMeta: { backgroundSource: "workflow", title: runLabel, workId: payload.runId },
+    taskId: payload.runId,
+    text: formatWorkflowAskStallNotification({
+      runLabel,
+      runId: payload.runId,
+      instance: { siteId, ordinal },
+      sinceMs,
+      ...(reason === undefined ? {} : { reason }),
+    }),
+    traceContext,
+  });
 }
 
 /** run 级停滞的事件种类（引擎的 `RunEvent.type`）。 */
@@ -200,4 +270,32 @@ function actorRefLabel(payload: Record<string, unknown>): string {
 function stringField(payload: Record<string, unknown>, key: string): string | undefined {
   const value = payload[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+export async function recordWorkflowHostObservation(
+  this: AgentRuntimeInternal,
+  input: DynamicWorkflowRunProgressPayload,
+  onStored: (storedEvent: SessionEvent) => void,
+): Promise<void> {
+  const observation = parseWorkflowRunProgressObservation(input);
+  if (observation.kind !== "host-reconciliation") {
+    throw new Error("Invalid workflow host observation");
+  }
+  // parser 的独立副本与 root trace 在首个 await 前冻结，重试不重新铸造身份。
+  const payload = observation.value;
+  Object.freeze(payload.payload.error);
+  Object.freeze(payload.payload);
+  Object.freeze(payload);
+  const traceContext = Object.freeze({ ...this.rootTraceContext });
+  const event = Object.freeze(
+    this.createEvent(SessionEventType.DynamicWorkflowRunProgress, payload, traceContext),
+  );
+  await appendEventWithHostStoredHandoff.call(this, event, traceContext, (storedEvent) => {
+    try {
+      onStored(storedEvent);
+    } finally {
+      // 提醒更新至多一次且在已确认存储之后；其异常由交接边界隔离。
+      noteWorkflowReminderRunEvent(this, payload);
+    }
+  });
 }

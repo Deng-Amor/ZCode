@@ -4,6 +4,7 @@ import {
   buildRuntimeZCodeEndpointUrls,
 } from "@zcode/shared";
 
+// 登录中转页仍使用线上约定的 zcode 协议；上游 OAuth 应用标识保持不变。
 const DESKTOP_OAUTH_CALLBACK_URI = "zcode://oauth/callback";
 
 export function readEnv(env: NodeJS.ProcessEnv, key: string): string | undefined {

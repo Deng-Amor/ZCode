@@ -1,0 +1,1 @@
+export const controllerLockedStoreModule = { id: "controller-locked-store", requires: ["managed-skills"], provides: ["controller-locked-store"], publicEntrypoints: ["index.ts", "contract.ts"] } as const;

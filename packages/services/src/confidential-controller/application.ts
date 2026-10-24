@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { verifyManagedSkillBundle, type ManagedSkillTrust } from "@zcode/shared/managed-skills";
+import { verifyManagedSkillBundle, type ManagedSkillTrust, type VerifiedManagedSkillBundle } from "@zcode/shared/managed-skills";
 import {
   ConfidentialControllerError,
   type ControllerBootstrap,
@@ -15,12 +15,17 @@ import { createControllerHttpSource } from "./http-source.js";
 import { CcodePlatformAuth } from "./platform-auth.js";
 
 const MAX_PRIVATE_CHANNELS = 16;
+type LockedContent = { version: number; digest: string; skillMd: string; files: readonly { path: string; bytes: Uint8Array }[] };
+type LockedStorePort = { install(verified: VerifiedManagedSkillBundle): Promise<unknown>; status(): Promise<{ state: string; current?: { version: number } }>; load(): Promise<unknown> };
+type ControllerUpdateSource = { fetchUpdate(input: { currentVersion?: number }): Promise<{ kind: "envelope"; envelope: unknown } | { kind: "upToDate" }> };
 
 /** Instantiate once for the Electron application, not once per window or Agent. */
 export function createControllerApplication(options: {
   apiBaseUrl: string;
   trusts: readonly ManagedSkillTrust[];
   sessionStore?: PlatformSessionStore;
+  lockedStore?: LockedStorePort;
+  updateSource?: ControllerUpdateSource;
 }) {
   const stateListeners = new Set<() => void>();
   const channels = new Set<ControllerPrivateChannel>();
@@ -31,9 +36,36 @@ export function createControllerApplication(options: {
     getAccessToken: (identity, signal) => auth.getAccessToken(identity, signal),
   });
   const trust = options.trusts.find((trust) => trust.skillId === "controller");
+  const updateSource =
+    options.updateSource ??
+    (options.lockedStore && trust
+      ? {
+          fetchUpdate: async ({ currentVersion }: { currentVersion?: number }) => {
+            if (!identity) throw new ConfidentialControllerError("AUTH_REQUIRED");
+            const grant = await source.authorize({ identity, skillId: trust.skillId, signal: generation.signal });
+            if (grant.version <= (currentVersion ?? 0)) return { kind: "upToDate" as const };
+            const envelope = await source.download({ identity, grant, signal: generation.signal });
+            return { kind: "envelope" as const, envelope };
+          },
+        }
+      : undefined);
   let identity: ControllerIdentity | undefined;
   let generation = new AbortController();
   let bootstrap: Promise<ControllerBootstrap> | undefined;
+  let updateCheck: Promise<void> | undefined;
+  const checkForUpdate = async () => {
+    if (!updateSource || !options.lockedStore || !trust || updateCheck) return;
+    updateCheck = (async () => {
+      try {
+        const status = await options.lockedStore!.status();
+        const result = await updateSource.fetchUpdate({ currentVersion: status.current?.version });
+        if (result.kind === "envelope") await options.lockedStore!.install(verifyManagedSkillBundle(result.envelope, trust));
+      } catch {
+        // 更新失败不影响现版本可用，§5.5；失败计数由后续审计遥测接入。
+      }
+    })();
+    await updateCheck;
+  };
   const assemble = async (current: ControllerIdentity, signal: AbortSignal) => {
     try {
       if (!trust) throw new ConfidentialControllerError("INVALID_RELEASE");
@@ -58,6 +90,7 @@ export function createControllerApplication(options: {
         throw new ConfidentialControllerError("INVALID_RELEASE");
       if (grant.expiresAt <= Date.now())
         throw new ConfidentialControllerError("AUTHORIZATION_EXPIRED");
+      if (options.lockedStore) await options.lockedStore.install(verified);
       const decoder = new TextDecoder("utf-8", { fatal: true });
       const parts = verified.files.map((file) => {
         if (!/\.md$/i.test(file.path)) throw new ConfidentialControllerError("INVALID_RELEASE");
@@ -99,6 +132,7 @@ export function createControllerApplication(options: {
       generation = new AbortController();
       identity = nextIdentity;
       bootstrap = undefined;
+      updateCheck = undefined;
       if (hadIdentity) for (const channel of channels) channel.invalidate?.();
       for (const listener of stateListeners) {
         try {
@@ -116,8 +150,18 @@ export function createControllerApplication(options: {
       getState: async () => {
         await auth.restore();
         const state = auth.getState();
-        if (state.authenticated) await prefetchController();
+        if (state.authenticated) {
+          await prefetchController();
+          void checkForUpdate();
+        }
         return state;
+      },
+      /** 平台出网通道共用认证头（M6-R1 不新增凭据；未登录抛 AUTH_REQUIRED，由调用方退避）。 */
+      getAuthHeaders: async () => {
+        await auth.restore();
+        if (!identity) throw new ConfidentialControllerError("AUTH_REQUIRED");
+        const token = await auth.getAccessToken(identity, generation.signal);
+        return { authorization: `Bearer ${token}`, "tenant-id": identity.tenantId };
       },
       onStateChanged: (listener: () => void) => {
         stateListeners.add(listener);
@@ -129,12 +173,17 @@ export function createControllerApplication(options: {
       login: async (input: PlatformLoginInput, signal?: AbortSignal) => {
         const state = await auth.login(input, signal);
         await prefetchController();
+        void checkForUpdate();
         return state;
       },
       logout: () => auth.logout(),
     }),
     /** Private process channel only: never register on normal renderer/mobile service RPC. */
     getBootstrap,
+    getLockedContent: async (): Promise<LockedContent> => {
+      if (!options.lockedStore) throw new ConfidentialControllerError("AUTH_REQUIRED");
+      return (await options.lockedStore.load()) as LockedContent;
+    },
     /** Main may attach only a dedicated trusted child-process port, never renderer RPC. */
     createPrivateChannel: (transport: {
       send(event: ControllerPrivateEvent): void;
@@ -144,7 +193,10 @@ export function createControllerApplication(options: {
       if (channels.size >= MAX_PRIVATE_CHANNELS)
         throw new ConfidentialControllerError("CAPACITY_EXCEEDED");
       const channel = createControllerPrivateChannel({
-        getBootstrap,
+        getLockedContent: async () => {
+          if (!options.lockedStore) throw new ConfidentialControllerError("AUTH_REQUIRED");
+          return (await options.lockedStore.load()) as LockedContent;
+        },
         send: (event) => transport.send(event),
         close: () => {
           channels.delete(channel);

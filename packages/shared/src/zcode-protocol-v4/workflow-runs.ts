@@ -587,3 +587,48 @@ export const workflowRunsStateSchema = z.object({
   runs: z.array(workflowRunSchema).max(WORKFLOW_RUNS_LIMITS.maxRuns),
 });
 export type WorkflowRunsState = z.infer<typeof workflowRunsStateSchema>;
+
+/** 宿主权威修正只是一条父会话观察，sequence=0 不代表任何 journal cursor。 */
+const workflowRunHostObservationSchema = z.strictObject({
+  runId: z.string().regex(/^[A-Za-z0-9-]{1,128}$/),
+  toolCallId: z.string().min(1).max(128).optional(),
+  observationSource: z.literal("host-reconciliation"),
+  eventType: z.literal("run-settled"),
+  sequence: z.literal(0),
+  payload: z.strictObject({
+    status: z.literal("errored"),
+    error: z.strictObject({
+      code: z.literal("RecoveryUncertain"),
+      message: z
+        .string()
+        .min(1)
+        .max(WORKFLOW_RUNS_LIMITS.maxErrorLength)
+        .refine((text) => text.trim().length > 0),
+    }),
+  }),
+});
+
+export type WorkflowRunHostObservation = z.infer<typeof workflowRunHostObservationSchema>;
+export type WorkflowRunProgressObservation =
+  | { kind: "legacy" }
+  | { kind: "host-reconciliation"; value: WorkflowRunHostObservation }
+  | { kind: "invalid"; reasonCode: "unsupported_source" | "invalid_host_observation" };
+
+/**
+ * source 的缺席才兼容旧载荷；显式未知/损坏来源不能降级后污染终态或水位。
+ * producer、runtime 与投影共用此边界，纯 shared 层不记录原始输入。
+ */
+export function parseWorkflowRunProgressObservation(
+  input: unknown,
+): WorkflowRunProgressObservation {
+  if (typeof input !== "object" || input === null || !Object.hasOwn(input, "observationSource")) {
+    return { kind: "legacy" };
+  }
+  if ((input as Record<string, unknown>).observationSource !== "host-reconciliation") {
+    return { kind: "invalid", reasonCode: "unsupported_source" };
+  }
+  const parsed = workflowRunHostObservationSchema.safeParse(input);
+  return parsed.success
+    ? { kind: "host-reconciliation", value: parsed.data }
+    : { kind: "invalid", reasonCode: "invalid_host_observation" };
+}

@@ -1,18 +1,18 @@
 import { CONFIDENTIAL_CONTROLLER_SKILL_NAME, isConfidentialControllerSkill as isReserved,
   type SkillMetadata, type SkillPort } from '@zcode/contracts';
-import { PrivateControllerError } from './contract.js';
+import { PrivateControllerError, type ControllerLockedContentPort } from './contract.js';
 
 function controllerMetadata(): SkillMetadata {
   return {
     name: CONFIDENTIAL_CONTROLLER_SKILL_NAME,
-    description: '每次新工作请求开始前调用以启用任务总控；普通聊天不调用。只返回授权确认，无需读取技能文件。',
+    description: '用户请求开始、执行、继续或落实任务，或要求交付物/修改文件时调用本技能加载；普通聊天、问候、概念解释或讨论想法时不调用。正文只在命中加载时进入上下文。',
     path: '', directory: '', rootPath: '',
     scope: 'admin', source: 'remote', safeToAutoLoad: false, frontmatterKeys: [],
   };
 }
 
-/** Exposes an activation entry only; never stores or returns controller instructions. */
-export function createControllerSkillPort(ordinary?: SkillPort): SkillPort {
+/** 暴露两层触发入口；锁定正文只经注入端口读取。 */
+export function createControllerSkillPort(ordinary?: SkillPort, locked?: ControllerLockedContentPort): SkillPort {
   return {
     async discoverSkills(request, options) {
       options?.signal?.throwIfAborted();
@@ -30,8 +30,20 @@ export function createControllerSkillPort(ordinary?: SkillPort): SkillPort {
     },
     async loadSkill(request, options) {
       options?.signal?.throwIfAborted();
-      // 核心正文只能走运行时私有注入；同名插件或路径调用不得回退到本地文件。
-      if (isReserved(request.name) || !ordinary) throw new PrivateControllerError('UNAVAILABLE');
+      if (isReserved(request.name)) {
+        if (!locked) throw new PrivateControllerError('UNAVAILABLE');
+        try {
+          const content = await locked.load();
+          const sizeBytes = new TextEncoder().encode(content.skillMd).byteLength;
+          return {
+            metadata: { ...controllerMetadata(), name: CONFIDENTIAL_CONTROLLER_SKILL_NAME },
+            content: content.skillMd, baseDirectory: '', bytesRead: sizeBytes, sizeBytes, truncated: false,
+          };
+        } catch {
+          throw new PrivateControllerError('UNAVAILABLE');
+        }
+      }
+      if (!ordinary) throw new PrivateControllerError('UNAVAILABLE');
       const content = await ordinary.loadSkill(request, options);
       if ([content.metadata.name, content.metadata.qualifiedName ?? '', content.metadata.path,
         content.baseDirectory].some(isReserved)) throw new PrivateControllerError('UNAVAILABLE');

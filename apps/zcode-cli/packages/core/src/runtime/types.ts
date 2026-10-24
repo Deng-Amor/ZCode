@@ -229,8 +229,6 @@ export interface AgentRuntimeConfig {
 
   // Context Builder config
   systemPrompt?: string;
-  /** 启动时注入的只读全局规则；只参与模型上下文，不进入会话持久化。 */
-  globalSystemPrompt?: string;
   /**
    * 动态工作流子代理的身份输入：在场即让
    * context builder 走「基座 + 工作流子代理契约 + persona 叠加」路径，而不是把 persona 当

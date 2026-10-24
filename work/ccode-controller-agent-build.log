@@ -1,0 +1,66 @@
+• turbo 2.9.14
+ WARNING  Unable to calculate transitive closures: Workspace 'packages/browser-use-plugin' not found in lockfile.
+
+   • Packages in scope: @zcode/cli
+   • Running build:desktop-agent in 1 packages
+   • Remote caching disabled
+
+@zcode/shared-types:build: cache hit, replaying logs 77665a53bbc81c68
+@zcode/shared-types:build: 
+@zcode/shared-types:build: > @zcode/shared-types@0.1.0 build E:\ZCode\apps\zcode-cli\packages\shared-types
+@zcode/shared-types:build: > tsc
+@zcode/shared-types:build: 
+@zcode/contracts:build: cache hit, replaying logs 31373d83c1eee4a9
+@zcode/dynamic-workflow:build: cache hit, replaying logs b3ae2bdde470928f
+@zcode/contracts:build: 
+@zcode/contracts:build: > @zcode/contracts@0.1.0 build E:\ZCode\apps\zcode-cli\packages\contracts
+@zcode/contracts:build: > tsc
+@zcode/contracts:build: 
+@zcode/dynamic-workflow:build: 
+@zcode/dynamic-workflow:build: > @zcode/dynamic-workflow@0.1.0 build E:\ZCode\apps\zcode-cli\packages\dynamic-workflow
+@zcode/dynamic-workflow:build: > node scripts/generate-libs.mjs && tsc
+@zcode/dynamic-workflow:build: 
+@zcode/i18n:build: cache hit, replaying logs d730c3eef015fc59
+@zcode/i18n:build: 
+@zcode/i18n:build: > @zcode/i18n@0.1.0 build E:\ZCode\apps\zcode-cli\packages\i18n
+@zcode/i18n:build: > tsc
+@zcode/i18n:build: 
+@zcode/adapters:build: cache miss, executing 83256a4dc90213bf
+@zcode/telemetry:build: cache hit, replaying logs 85692d4270707248
+@zcode/telemetry:build: 
+@zcode/telemetry:build: > @zcode/telemetry@0.1.0 build E:\ZCode\apps\zcode-cli\packages\telemetry
+@zcode/dynamic-workflow-runtime:build: cache hit, replaying logs d6eafd57ea8fbf8f
+@zcode/telemetry:build: > tsc
+@zcode/telemetry:build: 
+@zcode/dynamic-workflow-runtime:build: 
+@zcode/dynamic-workflow-runtime:build: > @zcode/dynamic-workflow-runtime@0.1.0 build E:\ZCode\apps\zcode-cli\packages\dynamic-workflow-runtime
+@zcode/dynamic-workflow-runtime:build: > tsc
+@zcode/dynamic-workflow-runtime:build: 
+@zcode/core:build: cache hit, replaying logs a744648b29382613
+@zcode/core:build: 
+@zcode/core:build: > @zcode/core@0.1.0 build E:\ZCode\apps\zcode-cli\packages\core
+@zcode/core:build: > tsc
+@zcode/core:build: 
+@zcode/adapters:build: 
+@zcode/adapters:build: > @zcode/adapters@0.1.0 build E:\ZCode\apps\zcode-cli\packages\adapters
+@zcode/adapters:build: > tsc
+@zcode/adapters:build: 
+@zcode/bootstrap:build: cache miss, executing 8e456c0636c5c9e2
+@zcode/bootstrap:build: 
+@zcode/bootstrap:build: > @zcode/bootstrap@0.1.0 build E:\ZCode\apps\zcode-cli\packages\bootstrap
+@zcode/bootstrap:build: > tsc
+@zcode/bootstrap:build: 
+@zcode/cli:build:desktop-agent: cache miss, executing 415bf8471bc2553b
+@zcode/cli:build:desktop-agent: 
+@zcode/cli:build:desktop-agent: > @zcode/cli@0.1.0 build:desktop-agent E:\ZCode\apps\zcode-cli\packages\cli
+@zcode/cli:build:desktop-agent: > node scripts/build.mjs --desktop-agent
+@zcode/cli:build:desktop-agent: 
+@zcode/cli:build:desktop-agent: 
+@zcode/cli:build:desktop-agent:   dist\zcode.cjs  14.5mb
+@zcode/cli:build:desktop-agent: 
+@zcode/cli:build:desktop-agent: Done in 678ms
+
+ Tasks:    10 successful, 10 total
+Cached:    7 cached, 10 total
+  Time:    12.824s 
+

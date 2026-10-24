@@ -75,13 +75,13 @@ export interface ControllerBootstrap {
 }
 
 export type ControllerPrivateCommand =
-  | { type: "bootstrap"; requestId: number }
+  | { type: "locked-content"; requestId: number }
   | { type: "acquire"; requestId: number; version?: number }
   | { type: "complete" | "cancel"; requestId: number };
 
 export type ControllerPrivateEvent =
   | { type: "invalidated" }
-  | ({ type: "bootstrap-ready"; requestId: number } & ControllerBootstrap)
+  | { type: "locked-content-ready"; requestId: number; version: number; digest: string; skillMd: string }
   | { type: "ready"; requestId: number; version: number; digest: string; instruction: string }
   | { type: "completed"; requestId: number }
   | { type: "failed"; requestId: number; code: ControllerErrorCode };

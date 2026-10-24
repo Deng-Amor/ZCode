@@ -1,7 +1,7 @@
 // ============================================================
 // ResumeWorkflowRun Tool Handler
 // ============================================================
-// 恢复一个 stopped 的 dwf run（模型侧入口；可恢复集 = `stopped`，不论 reason）。见端口契约
+// 恢复符合服务准入条件的 stopped dwf run（模型侧入口；未知 world-run 与 superseded 除外）。见端口契约
 // `DynamicWorkflowRunPort.resume`（contracts/src/interfaces/dynamic-workflow-run.port.ts）。
 //
 // handler 刻意**很薄**：门（可恢复集判定）、注册表替换、compileOnce/scriptHash 重验全部在
@@ -24,12 +24,7 @@ import {
   type ResumeWorkflowRunInput,
   type ResumeWorkflowRunOutput,
 } from "@zcode/contracts";
-import type {
-  ToolEntry,
-  ToolExecutionContext,
-  ToolHandler,
-  ToolHandlerFailure,
-} from "../types.js";
+import type { ToolEntry, ToolExecutionContext, ToolHandler, ToolHandlerFailure } from "../types.js";
 import { workflowRunNotFoundFailure } from "./workflow-run-introspection.js";
 
 const RESUME_WORKFLOW_RUN_TIMEOUT_MS = 15_000;
@@ -55,14 +50,15 @@ const RESUME_WORKFLOW_RUN_ERROR_CODE = {
   SCRIPT_MISMATCH: 15,
   SUPERSEDED: 16,
   COMPILE_FAILED: 17,
+  RECOVERY_UNCERTAIN: 18,
 } as const;
 
 const RESUME_WORKFLOW_RUN_DESCRIPTION = [
-  "Resumes a dynamic-workflow run whose status is `stopped` — the user cancelled it, you stopped it with TaskStop, a provider-side error stopped it (expired sign-in, model not in the plan, quota cap), or the process that owned it exited (`interrupted`). The run continues under the same run ID: finished steps are replayed from the journal without spending tokens, unfinished steps are dispatched again. The one stopped run that is NOT resumable is a `superseded` one: an AmendWorkflow replaced it, and its successor is the live run.",
+  "Resumes an eligible dynamic-workflow run whose status is `stopped` — the user cancelled it, you stopped it with TaskStop, a provider-side error stopped it (expired sign-in, model not in the plan, quota cap), or the process that owned it exited (`interrupted`). The run continues under the same run ID: finished steps are replayed from the journal without spending tokens, and safe unfinished steps continue. A `superseded` run is not resumable: an AmendWorkflow replaced it, and its successor is the live run. A recorded running world-run has an unknown external outcome: recovery is refused, and that outcome requires verification; no replay approval or bypass is available.",
   "",
   "- Takes run_id — from CreateWorkflow's or AmendWorkflow's result, from a completion notification, or from GetWorkflowRun / ListWorkflowRuns.",
   "- The resumed run is backgrounded: you will be notified with the final output when it completes. Do not wait for it or poll it with TaskOutput; continue with other work unless the user asked you to wait.",
-  "- An `errored` run (the script itself failed) is NOT resumable — replaying it would fail the same way. Fix the script and submit it with AmendWorkflow instead. A completed run is not resumable either; a `superseded` run is refused with the successor's ID.",
+  "- An `errored` run is NOT resumable. For a script error without an unknown external outcome, fix the script and submit it with AmendWorkflow. RecoveryUncertain requires verification of the external outcome; amendment is also refused. A completed run is not resumable either; a `superseded` run is refused with the successor's ID.",
   "- Stop reason `user` means the user stopped it on purpose: resume it only when the user asks you to; never resume a run the user just cancelled on your own initiative. Reason `model` is your own TaskStop. Reason `provider` means a provider-side error stopped it: resolve the cause with the user first (the stop notification names it), then resume. Reason `interrupted` (the process died) is different: continuing it is usually what the user wants.",
 ].join("\n");
 
@@ -146,10 +142,23 @@ const resumeWorkflowRunHandler: ToolHandler = async (input, context: ToolExecuti
 
   const result = await port.resume(parsed.run_id);
   if (!result.ok) {
+    // 端口是未知效果身份的权威；不能落入普通拒绝的自动修订建议。
+    if (result.reason === "recovery_uncertain") {
+      const { runId, instance } = result.uncertainty;
+      return {
+        result: false,
+        errorCode: RESUME_WORKFLOW_RUN_ERROR_CODE.RECOVERY_UNCERTAIN,
+        message: `workflow_run_recovery_uncertain: run ${runId}, instance ${instance.siteId}#${instance.ordinal}: the external outcome is unknown and requires verification. Recovery was refused to avoid repeating the effect.`,
+      };
+    }
     // not_found 复用内省工具的 run_not_found 键（同键同码同 message）。
     return result.reason === "not_found"
       ? workflowRunNotFoundFailure(parsed.run_id)
-      : resumeFailureFor(result.reason, parsed.run_id, result.message);
+      : resumeFailureFor(
+          result.reason,
+          parsed.run_id,
+          "message" in result ? result.message : undefined,
+        );
   }
 
   return {
@@ -198,7 +207,8 @@ export const resumeWorkflowRunToolEntry: ToolEntry = {
   formatModelContent: formatResumeWorkflowRunModelContent,
   permission: {
     permission: "resumeWorkflowRun",
-    reason: "resumeWorkflowRun.runConfirmation: resuming continues executing a stopped workflow run",
+    reason:
+      "resumeWorkflowRun.runConfirmation: resuming continues executing a stopped workflow run",
     riskLevel: "low",
     sideEffectScope: "none",
     // resume 被

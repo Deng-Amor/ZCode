@@ -3,6 +3,7 @@
 // roundtrip）→ 排队文本必须以可见 user row 落入 timeline（live 投影修复回归，
 // 见 fix(protocol-v4) heldQueueDisposition/drained user row 提交），且回复出现、queue 清空。
 import { clearAppData } from "../helpers/desktop-app.js";
+import { enterQueueWorkspace } from "./queue-native-entry.js";
 import {
   getV4QueueItems,
   prepareV4ConversationE2E,
@@ -19,6 +20,7 @@ describe("v4 catalog C02：queue 自动消费与消息保留", () => {
   });
 
   it("running 中入队 → 自动 drain → 排队文本落为可见 user row + 回复出现", async () => {
+    await enterQueueWorkspace({ case: "C02" }, "initialStartup");
     await prepareV4ConversationE2E();
 
     // 首轮 8s 慢流，留出入队窗口

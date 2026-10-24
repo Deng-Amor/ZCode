@@ -305,6 +305,20 @@ Behavior:
 
 Cancellation is not a provider failure and is not retryable.
 
+If cancellation arrives after the model stream has returned successfully, while
+the runtime awaits successful response persistence and before tool drain, the
+coordinator must abandon accepted streaming tools before the existing turn abort
+check throws. The existing abort listener still cancels the handler immediately;
+abandon closes its ledger as `tool_cancelled` before `TurnComplete(cancelled)`.
+Neither the handler nor the model request is replayed. The existing 250 ms limit
+applies only to waiting for tool handles, not to ledger persistence.
+
+Regression: hold `ModelComplete` event persistence after a read-only streaming
+handler starts, abort the turn, then release persistence. Assert one handler
+execution, one model request, exactly one cancellation ledger terminal before
+`TurnComplete(cancelled)`, and no `TurnError`. This boundary does not establish
+cleanup or cancellation classification when persistence itself rejects.
+
 ### Provider Failure Before Tool Start
 
 If the stream fails after a tool call was partially emitted but the tool has not

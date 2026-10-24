@@ -11,6 +11,7 @@ import { heldResolution } from "./replay-order.js";
 import { boundWorldReadInput } from "./world-read-input.js";
 import { hashMismatch } from "./hash-mismatch.js";
 import type { EngineState } from "./engine-state.js";
+import { createRecoveryUncertainError, findUncertainWorldRun } from "./errors.js";
 import type {
   InstanceRef,
   JournalStorePort,
@@ -68,7 +69,14 @@ export function readWorld(
         throw WorkflowError.fromJSON(recorded.error!);
       });
     }
-    // status === "running"：崩溃于执行中，落到下面重新 live 执行。
+    // 效果可能已发生但尚未落结果：先终止 run，防止脚本 catch 后再派发效果；保留 running 事实。
+    const uncertain = findUncertainWorldRun([recorded]);
+    if (uncertain !== undefined) {
+      const err = createRecoveryUncertainError(state.runId, uncertain);
+      state.failRun(err);
+      return Promise.reject(err);
+    }
+    // 只有纯 world-read 的 running 可以重新 live 执行。
   }
 
   // op "run" 是效应而不是读，journal 单列一种（world-run）：机制同构，审计面诚实。其余 op 保持 world-read。

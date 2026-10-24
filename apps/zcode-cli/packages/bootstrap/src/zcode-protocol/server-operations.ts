@@ -1,3 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
+import { parseWorkflowRunProgressObservation } from "@zcode/shared/zcode-protocol-v4";
+import { createWorkflowHostObservationAdapter } from "./workflow-host-observation-adapter.js";
 import {
   isAuxiliarySessionKind,
   isReadonlyAgentSessionKind,
@@ -1765,10 +1768,18 @@ export async function listSessionSubagents(
   context: ZCodeProtocolAgentServerContext,
   rawParams: unknown,
   persistedMessages?: MessageWithParts[],
+  strict?: { record: ZCodeProtocolSessionRecord; assertCurrent(): void },
 ) {
+  strict?.assertCurrent();
+  const read = async <T>(operation: () => Promise<T>): Promise<T> => {
+    strict?.assertCurrent();
+    const value = await operation();
+    strict?.assertCurrent();
+    return value;
+  };
   const params = parseParams(zcodeSessionSubagentsParamsSchema, rawParams ?? {});
   const store = context.deps.sessionStore;
-  const liveParent = context.sessions.get(params.sessionId);
+  const liveParent = strict?.record ?? context.sessions.get(params.sessionId);
   if (!store) {
     return {
       revision: liveParent?.stateRevision ?? 0,
@@ -1778,7 +1789,7 @@ export async function listSessionSubagents(
     };
   }
 
-  const parentSession = await store.getSession(params.sessionId as SessionId);
+  const parentSession = await read(() => store.getSession(params.sessionId as SessionId));
   if (!parentSession) {
     // 诊断：hydrate 会复用子任务种子读取；若 task index/旧 ACP task 残留了无效 ID，
     // 这里会把“持久化记录不存在”包装成 v4.hydrate，必须记录调用阶段而不是只看错误文本。
@@ -1795,21 +1806,32 @@ export async function listSessionSubagents(
       `Session not found: ${params.sessionId}`,
     );
   }
-  const messages = persistedMessages ?? (await store.messages({ sessionID: parentSession.id }));
+  const messages =
+    persistedMessages ?? (await read(() => store.messages({ sessionID: parentSession.id })));
   const parentEvents = liveParent
-    ? await liveParent.eventStore.getEvents(parentSession.id).catch(() => [])
+    ? await read(() => liveParent.eventStore.getEvents(parentSession.id)).catch(
+        (error: unknown) => {
+          if (strict) throw error;
+          return [];
+        },
+      )
     : [];
   const childSessionIds = collectSubagentChildSessionIds(parentSession, messages, parentEvents);
   const childEntries = await Promise.all(
     childSessionIds.map(async (childSessionId) => {
-      const childSession = await store.getSession(childSessionId as SessionId);
+      const childSession = await read(() => store.getSession(childSessionId as SessionId));
       if (!childSession || childSession.taskType !== "subagent_child") return null;
-      const childMessages = await store.messages({
-        sessionID: childSession.id,
-      });
+      const childMessages = await read(() =>
+        store.messages({
+          sessionID: childSession.id,
+        }),
+      );
       const liveChild = context.sessions.get(childSessionId);
       const childProjection = liveChild
-        ? await liveChild.app.runtime.getProjection().catch(() => undefined)
+        ? await read(() => liveChild.app.runtime.getProjection()).catch((error: unknown) => {
+            if (strict) throw error;
+            return undefined;
+          })
         : undefined;
       return { childMessages, childProjection, childSession, childSessionId };
     }),
@@ -1818,8 +1840,12 @@ export async function listSessionSubagents(
     (entry): entry is NonNullable<typeof entry> => entry !== null,
   );
   const parentProjection = liveParent
-    ? await liveParent.app.runtime.getProjection().catch(() => undefined)
+    ? await read(() => liveParent.app.runtime.getProjection()).catch((error: unknown) => {
+        if (strict) throw error;
+        return undefined;
+      })
     : undefined;
+  strict?.assertCurrent();
   const projection = projectSessionSubagents({
     revision: liveParent?.stateRevision ?? parentSession.time.updated,
     parentSession,
@@ -1933,8 +1959,10 @@ export async function readSessionContextUsage(
   context: ZCodeProtocolAgentServerContext,
   sessionId: string,
   persistedMessages?: MessageWithParts[],
+  strict?: { record: ZCodeProtocolSessionRecord; assertCurrent(): void },
 ) {
-  const record = context.sessions.get(sessionId);
+  strict?.assertCurrent();
+  const record = strict?.record ?? context.sessions.get(sessionId);
   if (!record) return undefined;
   const [resolvedPersistedMessages, session, events] = await Promise.all([
     persistedMessages ?? readSessionMessages(context, record),
@@ -1944,7 +1972,9 @@ export async function readSessionContextUsage(
   // 保持 legacy buildSessionSnapshot 的取数顺序：先固定持久事实，再读取 runtime
   // projection。运行中首订阅若恰逢 ModelComplete/rewind，不能因窄读把 projection
   // 提前到并行阶段而制造新的跨水位组合。
+  strict?.assertCurrent();
   const projection = await record.app.runtime.getProjection();
+  strict?.assertCurrent();
   const messages = projectActiveSessionMessages(
     resolvedPersistedMessages,
     session,
@@ -3461,9 +3491,64 @@ async function createRecord(
   // automation-port 需要读取「本会话」的实时 model/mode/thought；record 在 app 之后才建。
   // 用可变持有者做惰性绑定：CronCreate 在 turn 中调用 create() 时 record 早已就绪。
   let ownSessionRecord: ZCodeProtocolSessionRecord | undefined;
+  let observationActive = true;
+  let observationApp: ZCodeProtocolSessionRecord["app"] | undefined;
+  let observationRuntime: ZCodeProtocolSessionRecord["app"]["runtime"] | undefined;
+  const observationCurrent = () => {
+    try {
+      context.assertServing?.();
+      return (
+        observationActive &&
+        !!ownSessionRecord &&
+        context.sessions.get(sessionId) === ownSessionRecord &&
+        ownSessionRecord.eventStore === eventStore &&
+        ownSessionRecord.app === observationApp &&
+        ownSessionRecord.app.runtime === observationRuntime
+      );
+    } catch {
+      return false;
+    }
+  };
+  const observationAdapter = createWorkflowHostObservationAdapter({
+    isCurrent: observationCurrent,
+    now: () => performance.now(),
+    verifyStored: async (event, signal) => {
+      if (!observationCurrent() || signal.aborted)
+        throw new Error("workflow observation owner unavailable");
+      const stored = await eventStore.getEvents(sessionId as SessionId);
+      if (!observationCurrent() || signal.aborted)
+        throw new Error("workflow observation owner unavailable");
+      const matches = stored.filter((item) => item.id === event.id);
+      if (
+        matches.length !== 1 ||
+        !isDeepStrictEqual(matches[0], event) ||
+        event.sessionId !== sessionId ||
+        event.sequenceNumber <= 0
+      )
+        throw new Error("workflow observation identity unavailable");
+      return matches[0]!;
+    },
+    ensureCommit: (event, owner) => {
+      const parsed = parseWorkflowRunProgressObservation(event.payload);
+      if (!observationCurrent() || !context.v4Gateway || parsed.kind !== "host-reconciliation")
+        throw new Error("workflow observation owner unavailable");
+      // 必须直接返回同一个 Promise，不能 async 包装改变取消微任务顺序。
+      return context.v4Gateway.ensureWorkflowHostObservationCommit(
+        sessionId,
+        { eventId: event.id, runId: parsed.value.runId },
+        owner,
+      );
+    },
+    report: (outcome) => {
+      if (outcome.event === "workflow.host_observation.sync.failed")
+        context.logger?.warn("Workflow host observation synchronization", outcome);
+      else context.logger?.info("Workflow host observation synchronization", outcome);
+    },
+  });
   const app = await createWorkspaceZCodeApp(context, workspace, {
     env: context.deps.env,
     eventStore,
+    onWorkflowHostObservationStored: (event) => observationAdapter.accept(event),
     resume,
     additionalDirectories: params.additionalDirectories ?? startupPreferences.additionalDirectories,
     runtimeConfig: {
@@ -3564,6 +3649,8 @@ async function createRecord(
     version: context.deps.version,
     modelIoFullRetentionEnabled: context.appRuntimePreferences.modelIoFullRetentionEnabled,
   });
+  observationApp = app;
+  observationRuntime = app.runtime;
   const now = Date.now();
   const record: ZCodeProtocolSessionRecord = {
     app,
@@ -3585,9 +3672,23 @@ async function createRecord(
     workspace,
   };
   const unsubscribeSessionEvents = app.runtime.subscribeEvents({
-    onSessionEvent: (event) => onSessionEvent(context, record, event),
+    onSessionEvent: (event) => {
+      if (!observationCurrent()) return;
+      const parsed =
+        event.type === SessionEventType.DynamicWorkflowRunProgress
+          ? parseWorkflowRunProgressObservation(event.payload)
+          : undefined;
+      if (parsed?.kind === "host-reconciliation")
+        observationAdapter.accept(
+          event,
+          event.sessionId === sessionId ? () => onSessionEvent(context, record, event) : undefined,
+        );
+      else onSessionEvent(context, record, event);
+    },
   });
   record.unsubscribe = () => {
+    observationActive = false;
+    observationAdapter.dispose();
     unsubscribeSessionEvents();
   };
   // 绑定归属会话，供 automation-port 读取本会话实时 model/mode/thought。

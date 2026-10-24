@@ -11,8 +11,41 @@ import {
   type DynamicWorkflowRunProgressPayload,
 } from "@zcode/contracts";
 import type { ActorRef, RunEvent } from "@zcode/dynamic-workflow";
+import {
+  WORKFLOW_RUNS_LIMITS,
+  parseWorkflowRunProgressObservation,
+} from "@zcode/shared/zcode-protocol-v4";
 import { isResumableSettlement } from "./dynamic-workflow-run-observation.js";
 import { mintActorSessionId } from "./workflow-driver.js";
+
+/** 宿主收敛不曾产生 Engine RunEvent；只铸父会话观察，绝不经过 toProtocolEvent。 */
+export function toHostReconciliationProgress(input: {
+  runId: string;
+  toolCallId?: string;
+  error: { code: string; message: string };
+}): DynamicWorkflowRunProgressPayload {
+  const { payload } = boundDynamicWorkflowRunEventPayload({
+    status: "errored",
+    error: {
+      code: input.error.code,
+      message: input.error.message.slice(0, WORKFLOW_RUNS_LIMITS.maxErrorLength),
+    },
+  });
+  const observation = parseWorkflowRunProgressObservation({
+    runId: input.runId,
+    ...(input.toolCallId === undefined ? {} : { toolCallId: input.toolCallId }),
+    observationSource: "host-reconciliation",
+    sequence: 0,
+    eventType: "run-settled",
+    payload,
+  });
+  if (observation.kind !== "host-reconciliation") {
+    throw new Error(
+      `Invalid workflow host observation: ${observation.kind === "invalid" ? observation.reasonCode : "missing_source"}`,
+    );
+  }
+  return observation.value;
+}
 
 /**
  * RunEvent → 协议事件的映射（**本注释即契约**）：`type` 取事件的判别式，`payload` 是同一个

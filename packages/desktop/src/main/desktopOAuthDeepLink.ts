@@ -402,6 +402,7 @@ export function registerDeepLinkProtocol(
   },
   options: { iconPath?: string } = {},
 ) {
+  // OAuth 回调必须兼容线上 zcode.ai 中转页使用的 zcode 协议。
   const scheme = "zcode";
 
   // 外部 URL 必须位于 -- 后；否则 Windows 引号拆分可把 URL 内容变成 Electron 启动参数。

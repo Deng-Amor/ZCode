@@ -49,7 +49,8 @@ interface ZCodeConfigFile {
 }
 
 function resolveUserHomeDir(): string {
-  const envHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
+  // 应用内 hooks 与品牌配置共用 home，避免跨安装写入。
+  const envHome = process.env.ZCODE_DESKTOP_HOME_DIR?.trim() || process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
   return envHome && envHome.length > 0 ? envHome : homedir();
 }
 

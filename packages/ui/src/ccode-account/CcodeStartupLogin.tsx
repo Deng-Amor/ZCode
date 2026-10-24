@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { DesktopCommandIds } from "@zcode/shared";
 import { useCcodeAccount } from "@/hooks/useCcodeAccount.js";
+import { usePlatform } from "@/hooks/usePlatform.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { DesktopOverlayWindowControls } from "@/DesktopOverlayWindowControls.js";
 import { Button } from "@/components/ui/button.js";
@@ -8,6 +10,7 @@ import { CcodeAccountForm } from "./CcodeAccountEntry.js";
 
 export function CcodeStartupLogin({ children }: { children: ReactNode }) {
   const { account, state, unavailable, refresh } = useCcodeAccount();
+  const platform = usePlatform();
   const { intl } = useZCodeIntl();
   const [finished, setFinished] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -45,6 +48,14 @@ export function CcodeStartupLogin({ children }: { children: ReactNode }) {
               onClick={() => void refresh()}
             >
               {t("retryAccount")}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-11 w-full"
+              onClick={() => void platform.executeDesktopCommand(DesktopCommandIds.CloseWindow)}
+            >
+              {t("cancel")}
             </Button>
           </div>
         ) : state || busy ? (

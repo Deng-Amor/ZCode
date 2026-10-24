@@ -6,6 +6,7 @@
 //   4. 重订阅替换语义（R-01）：旧 subId 作废、旧 buffer 清空
 //   5. resync 溢出降级：snapshot 重对齐后续流不断
 import { describe, expect, it } from "vitest";
+import { CommandInbox } from "../src/zcode-protocol-v4/command-inbox.js";
 import type {
   EventId,
   SessionEvent,
@@ -62,6 +63,212 @@ class EventLog {
     return event;
   }
 }
+
+describe("prepared rehydration", () => {
+  function setup() {
+    const publisher = new ConversationTopicPublisher("session-1", "epoch-1");
+    const log = new EventLog();
+    publisher.ingest(
+      log.push(SessionEventType.SessionCreated, { mode: "default", contextWindow: 1000 }),
+    );
+    const subscription = publisher.subscribe({ connectionId: "desktop" });
+    publisher.ingest(
+      log.push(SessionEventType.SessionTitleUpdated, { title: "live", source: "custom" }),
+    );
+    const reservation = publisher.reserveFlush(subscription.ack.subscriptionId)!;
+    return { publisher, log, subscription, reservation, before: publisher.getSnapshot() };
+  }
+
+  it.each([false, true])(
+    "detaches cached snapshots and nested references before and after adoption (initialized=%s)",
+    (initialized) => {
+      const { publisher, log, before } = setup();
+      if (initialized)
+        publisher.setRuntimeInitialization({ status: "ready", attemptId: "ready-1" });
+      const prepared = publisher.prepareRehydration(log.events, { requiredEventId: "event-2" });
+      const snapshot = prepared.candidate.getSnapshot();
+      const meta = snapshot.meta;
+      const config = snapshot.config;
+      const window = snapshot.rows.window;
+      snapshot.seq = 999;
+      meta.title = "changed before adoption";
+      config.mode = "plan";
+      window.push({ rowId: 999 } as ConversationSnapshot["rows"]["window"][number]);
+      expect(prepared.candidate.getSnapshot()).toMatchObject({
+        seq: 2,
+        meta: { title: "live" },
+        config: { mode: "build" },
+        rows: { window: [] },
+      });
+      expect(publisher.getSnapshot().meta).toEqual(before.meta);
+      publisher.adoptPreparedRehydration(prepared);
+      const adopted = structuredClone(publisher.getSnapshot());
+      snapshot.revision = 999;
+      meta.title = "changed after adoption";
+      config.mode = "changed after adoption";
+      window.push({ rowId: 1000 } as ConversationSnapshot["rows"]["window"][number]);
+      expect(publisher.getSnapshot()).toEqual(adopted);
+      expect(() => prepared.candidate.getSnapshot()).toThrow();
+      publisher.ingest(
+        log.push(SessionEventType.SessionTitleUpdated, {
+          title: "still mutable through admission",
+          source: "custom",
+        }),
+      );
+      expect(publisher.getSnapshot().meta.title).toBe("still mutable through admission");
+    },
+  );
+
+  it("keeps candidate private until adoption and invalidates old reservations and consumed candidates", () => {
+    const { publisher, log, subscription, reservation, before } = setup();
+    const target = log.push(SessionEventType.SessionTitleUpdated, {
+      title: "recovered",
+      source: "custom",
+    });
+    const prepared = publisher.prepareRehydration(log.events, { requiredEventId: target.id });
+    expect(prepared.appliedEventIds).toEqual(["event-1", "event-2", "event-3"]);
+    expect(prepared.skippedEventIds).toEqual([]);
+    prepared.candidate.seedConfig({ mode: "plan" });
+    expect(prepared.candidate.getSnapshot().meta.title).toBe("recovered");
+    expect(publisher.getSnapshot()).toEqual(before);
+    expect(publisher.reserveFlush(subscription.ack.subscriptionId)).toBe(reservation);
+    publisher.adoptPreparedRehydration(prepared);
+    expect(reservation.commit()).toBe(false);
+    expect(publisher.hasSubscription(subscription.ack.subscriptionId, "desktop")).toBe(true);
+    expect(publisher.flush(subscription.ack.subscriptionId)?.payload.kind).toBe("snapshot");
+    expect(publisher.getSnapshot()).toMatchObject({
+      meta: { title: "recovered" },
+      logEpoch: "epoch-1",
+      config: { mode: "plan" },
+    });
+    expect(() => prepared.candidate.ingest(target)).toThrow();
+    expect(() => publisher.adoptPreparedRehydration(prepared)).toThrow();
+  });
+
+  it("filters excluded events before replay and tail admission, and proves only applied ids", () => {
+    const { publisher, log, before } = setup();
+    const invalid = log.push(SessionEventType.TurnError, { turnPhase: "model" });
+    const target = log.push(SessionEventType.SessionTitleUpdated, {
+      title: "recovered",
+      source: "custom",
+    });
+    const prepared = publisher.prepareRehydration(log.events, {
+      excludedEventIds: new Set([invalid.id]),
+      requiredEventId: target.id,
+    });
+    expect(prepared.appliedEventIds).toEqual(["event-1", "event-2", "event-4"]);
+    expect(prepared.skippedEventIds).toEqual(["event-3"]);
+    prepared.candidate.ingest(invalid);
+    prepared.candidate.ingest(
+      log.push(SessionEventType.SessionTitleUpdated, { title: "tail", source: "custom" }),
+    );
+    expect(prepared.appliedEventIds).toEqual(["event-1", "event-2", "event-4", "event-5"]);
+    expect(publisher.getSnapshot()).toEqual(before);
+    publisher.adoptPreparedRehydration(prepared);
+    expect(publisher.getSnapshot().meta.title).toBe("tail");
+  });
+
+  it.each(["reducer", "missing", "excluded", "oversize"])(
+    "%s failure preserves live projection, log and delivery",
+    (failure) => {
+      const { publisher, log, subscription, reservation, before } = setup();
+      const target = log.push(
+        failure === "reducer" ? SessionEventType.TurnError : SessionEventType.SessionTitleUpdated,
+        failure === "reducer"
+          ? { turnPhase: "model" }
+          : {
+              title:
+                failure === "oversize"
+                  ? "x".repeat(PROTOCOL_V4_LIMITS.logicalFrameAssemblyMaxBytes)
+                  : "new",
+              source: "custom",
+            },
+      );
+      expect(() =>
+        publisher.prepareRehydration(log.events, {
+          requiredEventId: failure === "missing" ? "absent" : target.id,
+          excludedEventIds: new Set(failure === "excluded" ? [target.id] : []),
+          onPayloadTooLarge: () => undefined,
+        }),
+      ).toThrow();
+      expect(publisher.getSnapshot()).toEqual(before);
+      expect(publisher.reserveFlush(subscription.ack.subscriptionId)).toBe(reservation);
+      expect(reservation.commit()).toBe(true);
+      expect(
+        publisher.subscribe({ connectionId: "other", base: { logEpoch: "epoch-1", seq: 1 } }).ack
+          .mode,
+      ).toBe("resume");
+    },
+  );
+
+  it("reports tolerated oversized events as skipped rather than applied", () => {
+    const { publisher, log } = setup();
+    log.push(SessionEventType.SessionTitleUpdated, {
+      title: "x".repeat(PROTOCOL_V4_LIMITS.logicalFrameAssemblyMaxBytes),
+      source: "custom",
+    });
+    const target = log.push(SessionEventType.SessionTitleUpdated, {
+      title: "safe",
+      source: "custom",
+    });
+    const prepared = publisher.prepareRehydration(log.events, {
+      requiredEventId: target.id,
+      onPayloadTooLarge: () => undefined,
+    });
+    expect(prepared.appliedEventIds).toEqual(["event-1", "event-2", "event-4"]);
+    expect(prepared.skippedEventIds).toEqual(["event-3"]);
+    expect(prepared.candidate.getSnapshot().meta.title).toBe("safe");
+  });
+
+  it("rejects foreign, copied and serialized tokens without mutating publishers", () => {
+    const { publisher, log, before } = setup();
+    const prepared = publisher.prepareRehydration(log.events);
+    const other = new ConversationTopicPublisher("session-1", "epoch-1");
+    expect(() => other.adoptPreparedRehydration(prepared)).toThrow();
+    expect(() => publisher.adoptPreparedRehydration({ ...prepared })).toThrow();
+    expect(() => JSON.stringify(prepared)).toThrow();
+    expect(publisher.getSnapshot()).toEqual(before);
+    expect(other.getSnapshot().seq).toBe(0);
+    publisher.adoptPreparedRehydration(prepared);
+  });
+
+  it("rejects an oversized seeded candidate before any live adoption", () => {
+    const { publisher, log, subscription, reservation, before } = setup();
+    const prepared = publisher.prepareRehydration(log.events, { requiredEventId: "event-2" });
+    prepared.candidate.seedSharedContextImport({
+      title: "x".repeat(PROTOCOL_V4_LIMITS.logicalFrameAssemblyMaxBytes),
+    });
+    expect(() => publisher.adoptPreparedRehydration(prepared)).toThrow();
+    expect(publisher.getSnapshot()).toEqual(before);
+    expect(publisher.reserveFlush(subscription.ack.subscriptionId)).toBe(reservation);
+    expect(reservation.commit()).toBe(true);
+  });
+
+  it("cannot adopt a candidate after its tail reducer failed", () => {
+    const { publisher, log, before } = setup();
+    const prepared = publisher.prepareRehydration(log.events, { requiredEventId: "event-2" });
+    expect(() =>
+      prepared.candidate.ingest(log.push(SessionEventType.TurnError, { turnPhase: "model" })),
+    ).toThrow(TypeError);
+    expect(() => publisher.adoptPreparedRehydration(prepared)).toThrow();
+    expect(publisher.getSnapshot()).toEqual(before);
+  });
+
+  it("strict adoption invalidates reservations even when initialization preserves row structure", () => {
+    const { publisher, log, subscription, reservation } = setup();
+    publisher.setRuntimeInitialization({ status: "ready", attemptId: "ready-1" });
+    const beforeSeq = publisher.getSnapshot().seq;
+    const prepared = publisher.prepareRehydration(log.events, { requiredEventId: "event-2" });
+    publisher.adoptPreparedRehydration(prepared);
+    expect(reservation.commit()).toBe(false);
+    expect(publisher.getSnapshot().seq).toBeGreaterThan(beforeSeq);
+    expect(publisher.getSnapshot().runtimeInitialization).toEqual({
+      status: "ready",
+      attemptId: "ready-1",
+    });
+    expect(publisher.flush(subscription.ack.subscriptionId)?.payload.kind).toBe("snapshot");
+  });
+});
 
 function turnEvents(log: EventLog, turnNumber: number): SessionEvent[] {
   const turnId = `turn-${turnNumber}`;
@@ -134,6 +341,169 @@ function clientApply(
   };
   store.seq = frame.toSeq;
 }
+
+describe("strict recovery transport boundary", () => {
+  function livePublisher() {
+    const publisher = new ConversationTopicPublisher("session-1", "epoch-1");
+    const log = new EventLog();
+    for (let index = 0; index < 4; index += 1) {
+      publisher.ingest(
+        log.push(SessionEventType.SessionTitleUpdated, { title: `old-${index}`, source: "custom" }),
+      );
+    }
+    return { publisher, log };
+  }
+
+  for (const deliveryProfile of ["continuous", "replayable"] as const) {
+    it.each([2, 4, 5, 8])(
+      `${deliveryProfile}: old base requires snapshot after candidate seq %s`,
+      async (candidateSeq) => {
+        const { publisher, log } = livePublisher();
+        const initial = publisher.subscribe({ connectionId: "old", deliveryProfile });
+        const oldSnapshot = structuredClone(publisher.getSnapshot());
+        const oldBase = { logEpoch: "epoch-1", seq: oldSnapshot.seq };
+        publisher.ingest(
+          log.push(SessionEventType.SessionTitleUpdated, { title: "in-flight", source: "custom" }),
+        );
+        const pending = publisher.reserveFlush(initial.ack.subscriptionId)!;
+        const candidateLog = new EventLog();
+        const target = {
+          ...candidateLog.push(SessionEventType.SessionTitleUpdated, {
+            title: "recovered",
+            source: "custom",
+          }),
+          sequenceNumber: candidateSeq,
+        };
+        const prepared = publisher.prepareRehydration([target], { requiredEventId: target.id });
+        publisher.adoptPreparedRehydration(prepared);
+        expect(pending.commit()).toBe(false);
+        expect(publisher.getSnapshot().logEpoch).toBe("epoch-1");
+        expect(publisher.getSnapshot().runtimeInitialization).toBeUndefined();
+        expect(publisher.getSnapshot().seq).toBeGreaterThan(5);
+        const reconnect = publisher.subscribe({
+          connectionId: "reconnect",
+          deliveryProfile,
+          base: oldBase,
+        });
+        expect(reconnect.ack.mode).toBe("snapshot");
+        const restored = { seq: oldBase.seq, snapshot: structuredClone(oldSnapshot) };
+        clientApply(restored, reconnect.frame!);
+        expect(restored.snapshot.meta.title).toBe("recovered");
+        const resync = publisher.resyncReserved(initial.ack.subscriptionId, { base: oldBase })!;
+        expect(resync.ack.mode).toBe("snapshot");
+        const sameSub = { seq: oldBase.seq, snapshot: structuredClone(oldSnapshot) };
+        clientApply(sameSub, resync.frame!);
+        expect(sameSub.snapshot.meta.title).toBe("recovered");
+        const fresh = publisher.subscribe({
+          connectionId: "fresh",
+          deliveryProfile,
+          base: { logEpoch: "epoch-1", seq: restored.seq },
+        });
+        expect(fresh.ack.mode).toBe("resume");
+        expect(fresh.frame).toBeNull();
+        const inbox = new CommandInbox({
+          getRevision: () => publisher.getSnapshot().revision,
+          getLogEpoch: () => "epoch-1",
+        });
+        const result = await inbox.handle({
+          commandId: "stale-command",
+          clientId: "client",
+          sessionId: "session-1",
+          type: "retryTurn",
+          payload: { target: { rowId: 1, entityId: "entity-1" } },
+          baseRevision: oldSnapshot.revision,
+          baseLogEpoch: "epoch-1",
+          issuedAt: 1,
+        });
+        expect(result.ack).toMatchObject({ status: "stale", reasonCode: "proto.staleRevision" });
+        publisher.ingest({
+          ...target,
+          id: "next-event" as EventId,
+          sequenceNumber: publisher.getSnapshot().seq + 1,
+          payload: { title: "next", source: "custom" },
+        });
+        const delta = publisher.flush(fresh.ack.subscriptionId)!;
+        expect(delta.payload.kind).toBe("deltas");
+        clientApply(restored, delta);
+        expect(restored.snapshot.meta.title).toBe("next");
+      },
+    );
+  }
+
+  it.each(["seq", "revision"] as const)(
+    "rejects unsafe previous %s without changing live delivery",
+    (field) => {
+      for (const value of [
+        -1,
+        Number.MIN_VALUE,
+        0.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        Number.MAX_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER + 1,
+      ]) {
+        const { publisher } = livePublisher();
+        const initial = publisher.subscribeReserved({ connectionId: "old" });
+        publisher.getSnapshot()[field] = value;
+        const before = structuredClone(publisher.getSnapshot());
+        const prepared = publisher.prepareRehydration([], { excludedEventIds: new Set() });
+        expect(() => publisher.adoptPreparedRehydration(prepared)).toThrow(RangeError);
+        expect(publisher.getSnapshot()).toEqual(before);
+        expect(publisher.reserveFlush(initial.ack.subscriptionId)).toBe(initial.reservation);
+        expect(initial.reservation!.commit()).toBe(true);
+      }
+    },
+  );
+
+  it.each(["seq", "revision"] as const)(
+    "projection rejects invalid candidate %s before boundary mutation",
+    (field) => {
+      for (const value of [
+        -1,
+        0.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        Number.MAX_SAFE_INTEGER + 1,
+      ]) {
+        const projection = new ProductProjection("session-1", "epoch-1");
+        projection.getSnapshot()[field] = value;
+        const before = structuredClone(projection.getSnapshot());
+        expect(() => projection.advanceRecoveryBoundary(2, 2)).toThrow(RangeError);
+        expect(projection.getSnapshot()).toEqual(before);
+      }
+    },
+  );
+
+  it("rejects size growth caused by the recovery boundary without replacing live state", () => {
+    const { publisher, log } = livePublisher();
+    while (publisher.getSnapshot().seq < 9)
+      publisher.ingest(
+        log.push(SessionEventType.SessionTitleUpdated, { title: "old", source: "custom" }),
+      );
+    const initial = publisher.subscribeReserved({ connectionId: "old" });
+    const before = structuredClone(publisher.getSnapshot());
+    const prepared = publisher.prepareRehydration([], { excludedEventIds: new Set() });
+    prepared.candidate.seedSharedContextImport({ title: "x" });
+    const available =
+      PROTOCOL_V4_LIMITS.logicalFrameAssemblyMaxBytes -
+      prepared.candidate.getWireSnapshotLogicalBytes() +
+      1;
+    prepared.candidate.seedSharedContextImport({ title: "x".repeat(available) });
+    expect(prepared.candidate.getWireSnapshotLogicalBytes()).toBe(
+      PROTOCOL_V4_LIMITS.logicalFrameAssemblyMaxBytes,
+    );
+    expect(() => publisher.adoptPreparedRehydration(prepared)).toThrow(
+      "conversation projection exceeds",
+    );
+    expect(publisher.getSnapshot()).toEqual(before);
+    expect(publisher.reserveFlush(initial.ack.subscriptionId)).toBe(initial.reservation);
+    expect(initial.reservation!.commit()).toBe(true);
+    expect(
+      publisher.subscribe({ connectionId: "resume-old", base: { logEpoch: "epoch-1", seq: 8 } }).ack
+        .mode,
+    ).toBe("resume");
+  });
+});
 
 describe("分享导入来源种子", () => {
   it("在 publisher 快照中保留来源提示且不产生 conversation delta", () => {

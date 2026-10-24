@@ -1,8 +1,59 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   pluginUiToolResultNotificationSchema,
   type PluginUiToolResultNotification,
 } from "@zcode/shared/mcp-apps";
 import { randomUUID } from "node:crypto";
+
+/** record job 的只读生命周期能力；deadline 与 now 必须使用同一单调时钟。 */
+export interface WorkflowObservationOwner {
+  readonly signal: AbortSignal;
+  readonly deadlineAt: number;
+  readonly now: () => number;
+  readonly isCurrent: () => boolean;
+}
+
+export interface WorkflowHostObservationCommitResult {
+  /** 同 event/generation 曾消耗 strict 的真实历史，由 gateway 唯一持有。 */
+  strictAttempted: boolean;
+}
+
+export type WorkflowHostObservationPhase =
+  | "append"
+  | "handoff"
+  | "verify"
+  | "forward"
+  | "observe"
+  | "old_flight"
+  | "strict_load"
+  | "candidate"
+  | "adopt"
+  | "postcondition"
+  | "delivery"
+  | "dispose";
+
+export type WorkflowHostObservationReasonCode =
+  | "invalid_observation"
+  | "runtime_unavailable"
+  | "append_rejected"
+  | "identity_unverifiable"
+  | "owner_unavailable"
+  | "stale_owner"
+  | "handoff_failed"
+  | "apply_failed"
+  | "strict_load_failed"
+  | "target_not_applied"
+  | "postcondition_failed"
+  | "timeout"
+  | "disposed"
+  | "delivery_fault";
+
+/** 后续 gateway 安全错误使用的窄元数据；不携带任意错误正文。 */
+export interface WorkflowHostObservationCommitErrorMetadata {
+  phase: WorkflowHostObservationPhase;
+  reasonCode: WorkflowHostObservationReasonCode;
+  strictAttempted: boolean;
+}
 import { LocalTtftRecorder } from "./local-ttft.js";
 import { localTtftNow, localTtftFactsSchema } from "@zcode/shared/zcode-protocol-v4";
 import {
@@ -80,6 +131,7 @@ import type {
   ConversationOpenTiming,
 } from "@zcode/shared/zcode-protocol-v4";
 import {
+  parseWorkflowRunProgressObservation,
   DELIVERY_PROFILES,
   PROTOCOL_V4_LIMITS,
   ZCODE_ATTACHMENT_FAULT_CODES,
@@ -180,7 +232,10 @@ function rowTargetActionForCommand(
   }
 }
 
-interface PersistedEventsLoadResult {
+export interface PersistedEventsLoadResult {
+  /** 仅 strict direct store 核验返回；不能用合成事件代替。 */
+  verifiedTarget?: SessionEvent;
+  configSeed?: SessionConfigSeed | null;
   events: SessionEvent[];
   synthesized: boolean;
   /** durable transcript 重放后、live buffer 补回前注入的 store-verified child manifest。 */
@@ -460,6 +515,11 @@ export interface V4GatewayHost {
     sessionId: string,
     persistedMessages?: MessageWithParts[],
   ): Promise<PersistedEventsLoadResult>;
+  loadWorkflowHostObservationProjection?(
+    sessionId: string,
+    target: { eventId: string; runId: string },
+    owner: WorkflowObservationOwner,
+  ): Promise<PersistedEventsLoadResult>;
   /** 仅用于低频生命周期和恢复裁决；高频 event/stream trace 禁止走生产日志。 */
   onDebug?(message: string): void;
   onError?(scope: string, error: unknown, context?: V4GatewayErrorContext): void;
@@ -482,6 +542,7 @@ interface FlushState {
 }
 
 interface HydrationBuffer {
+  flight?: Promise<ConversationTopicPublisher>;
   cancelled: boolean;
   eventIds: Set<string>;
   rawEvents: SessionEvent[];
@@ -503,6 +564,31 @@ interface RawSequenceState {
   /** synthesized hydration 重建投影时，补回持久读取边界之后已经到达的 raw 事实。 */
   recentRawEventsById: Map<string, SessionEvent>;
 }
+
+export class WorkflowHostObservationCommitError extends Error {
+  constructor(
+    readonly phase: WorkflowHostObservationPhase,
+    readonly reasonCode: WorkflowHostObservationReasonCode,
+    readonly strictAttempted: boolean,
+  ) {
+    super("Workflow host observation synchronization failed");
+  }
+}
+
+interface HostObservationHistory {
+  runId?: string;
+  errorMessage?: string;
+  actualAdmission: boolean;
+  strictAttempted: boolean;
+  finalFailure?: WorkflowHostObservationCommitError;
+  operation?: Promise<WorkflowHostObservationCommitResult>;
+}
+interface HostObservationGeneration {
+  events: Map<string, HostObservationHistory>;
+  observers: Set<() => void>;
+  cancellations: Set<() => void>;
+}
+const WORKFLOW_HOST_OBSERVATION_INITIAL_WAIT_MS = 1000;
 
 interface ProjectionEventCommitWaiter {
   resolve(): void;
@@ -622,6 +708,7 @@ export class ConversationV4Gateway {
   /** load await 窗口内的 raw accepted events；重建后按 cursor/eventId 补回。 */
   private readonly hydrationBuffers = new Map<string, HydrationBuffer>();
   /** transcript 合成序列与 runtime raw 序列之间的 per-session 单调映射。 */
+  private readonly hostObservationGenerations = new Map<string, HostObservationGeneration>();
   private readonly rawSequenceStates = new Map<string, RawSequenceState>();
   /** connection-independent；command admission 与 transport subscription 生命周期解耦。 */
   private readonly projectionEventCommitWaiters = new Map<
@@ -834,11 +921,16 @@ export class ConversationV4Gateway {
       hydrationBuffer.eventIds.add(eventId);
       hydrationBuffer.rawEvents.push(event);
     }
-    this.emitLiveTelemetryFact(sessionId, event);
+    const hostObservation =
+      event.type === SessionEventType.DynamicWorkflowRunProgress &&
+      parseWorkflowRunProgressObservation(event.payload).kind === "host-reconciliation";
+    this.emitLiveTelemetryFact(sessionId, event, hostObservation);
     for (const normalizedEvent of this.normalizeRuntimeEventSequence(sessionId, event)) {
       try {
         this.localTtft.event(sessionId, normalizedEvent);
       } catch (error) {
+        if (hostObservation)
+          throw new WorkflowHostObservationCommitError("forward", "apply_failed", false);
         try {
           this.host.onError?.("v4.localTtft.observe", error);
         } catch {
@@ -849,7 +941,11 @@ export class ConversationV4Gateway {
     }
   }
 
-  private emitLiveTelemetryFact(sessionId: string, event: SessionEvent): void {
+  private emitLiveTelemetryFact(
+    sessionId: string,
+    event: SessionEvent,
+    hostObservation = false,
+  ): void {
     const eventId = String(event.id);
     // 主 session 与 detached child 各自维护事件序列，eventId 不能假设跨
     // session 全局唯一。旧去重只用 eventId，会把 child 的同号事件误判成主会话重放，
@@ -875,6 +971,9 @@ export class ConversationV4Gateway {
         this.host.emitConversationTelemetryFact?.(fact);
       }
     } catch (error) {
+      // host 外层 adapter 才能安全分类；不能让内部 catch 先把配置异常正文写入通用日志。
+      if (hostObservation)
+        throw new WorkflowHostObservationCommitError("forward", "apply_failed", false);
       // 轮次事实绝不能反向阻断 conversation 投影；严格 schema 失败只记录诊断。
       this.host.onError?.("v4.telemetry.normalize", error);
     }
@@ -882,6 +981,8 @@ export class ConversationV4Gateway {
       const observation = this.cuaPermissionNormalizer.normalize(sessionId, event);
       if (observation) this.host.emitCuaPermissionObservation?.(observation);
     } catch (error) {
+      if (hostObservation)
+        throw new WorkflowHostObservationCommitError("forward", "apply_failed", false);
       // 权限观察只是 live UI 提示，schema 或投影异常不能阻断 conversation 主链路。
       this.host.onError?.("v4.cuaPermissionObservation.normalize", error);
     }
@@ -989,8 +1090,326 @@ export class ConversationV4Gateway {
     await this.waitForProjectionEventCommit(sessionId, eventId);
   }
 
+  private hostGeneration(sessionId: string): HostObservationGeneration {
+    let generation = this.hostObservationGenerations.get(sessionId);
+    if (!generation) {
+      generation = { events: new Map(), observers: new Set(), cancellations: new Set() };
+      this.hostObservationGenerations.set(sessionId, generation);
+    }
+    return generation;
+  }
+
+  private hostHistory(
+    generation: HostObservationGeneration,
+    eventId: string,
+  ): HostObservationHistory {
+    let history = generation.events.get(eventId);
+    if (!history) {
+      history = { actualAdmission: false, strictAttempted: false };
+      generation.events.set(eventId, history);
+    }
+    return history;
+  }
+
+  private recordHostAdmission(sessionId: string, event: SessionEvent): void {
+    if (event.type !== SessionEventType.DynamicWorkflowRunProgress) return;
+    const parsed = parseWorkflowRunProgressObservation(event.payload);
+    if (parsed.kind !== "host-reconciliation") return;
+    const generation = this.hostGeneration(sessionId);
+    const history = this.hostHistory(generation, String(event.id));
+    history.actualAdmission = true;
+    history.runId = parsed.value.runId;
+    history.errorMessage = parsed.value.payload.error.message;
+    for (const notify of generation.observers) notify();
+  }
+
+  private disposeHostGeneration(sessionId: string): void {
+    const generation = this.hostObservationGenerations.get(sessionId);
+    if (!generation) return;
+    // 原因：先清历史会把已消耗 strict 的取消诊断误报为 false。
+    for (const cancel of generation.cancellations) cancel();
+    this.hostObservationGenerations.delete(sessionId);
+  }
+
+  ensureWorkflowHostObservationCommit(
+    sessionId: string,
+    target: { eventId: string; runId: string },
+    owner: WorkflowObservationOwner,
+  ): Promise<WorkflowHostObservationCommitResult> {
+    const generation = this.hostGeneration(sessionId);
+    const history = this.hostHistory(generation, target.eventId);
+    if (history.operation) return history.operation;
+    let resolve!: (value: WorkflowHostObservationCommitResult) => void;
+    let reject!: (error: WorkflowHostObservationCommitError) => void;
+    const result = new Promise<WorkflowHostObservationCommitResult>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    history.operation = result;
+    let active = true;
+    let phase: WorkflowHostObservationPhase = "observe";
+    let expectedErrorMessage: string | undefined;
+    let initialTimer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let wake: (() => void) | undefined;
+    let buffer: HydrationBuffer | undefined;
+    let flight: Promise<ConversationTopicPublisher> | undefined;
+    const error = (reason: WorkflowHostObservationReasonCode) =>
+      new WorkflowHostObservationCommitError(phase, reason, history.strictAttempted);
+    const cleanup = () => {
+      if (initialTimer) clearTimeout(initialTimer);
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      owner.signal.removeEventListener("abort", abort);
+      generation.cancellations.delete(dispose);
+      generation.observers.delete(notify);
+      if (history.operation === result) history.operation = undefined;
+      if (buffer) buffer.cancelled = true;
+      if (buffer && this.hydrationBuffers.get(sessionId) === buffer)
+        this.hydrationBuffers.delete(sessionId);
+      if (flight && this.hydrationInFlight.get(sessionId) === flight)
+        this.hydrationInFlight.delete(sessionId);
+      wake?.();
+    };
+    const fail = (reason: WorkflowHostObservationReasonCode) => {
+      if (!active) return;
+      active = false;
+      const failure = history.finalFailure ?? error(reason);
+      if (history.strictAttempted) history.finalFailure = failure;
+      // 直接拒绝外层 deferred，不经过 async/.finally 转发；adapter 单 microtask 兜底才能取得真实历史。
+      reject(failure);
+      cleanup();
+    };
+    const abort = () => fail(owner.signal.reason === "timeout" ? "timeout" : "disposed");
+    const dispose = () => {
+      phase = "dispose";
+      fail("disposed");
+    };
+    const guard = () => {
+      if (!active) throw error("disposed");
+      if (this.disposed || this.hostObservationGenerations.get(sessionId) !== generation)
+        throw error("disposed");
+      if (owner.signal.aborted)
+        throw error(owner.signal.reason === "timeout" ? "timeout" : "disposed");
+      if (!owner.isCurrent()) throw error("stale_owner");
+      if (owner.now() >= owner.deadlineAt) throw error("timeout");
+    };
+    const postcondition = (snapshot: ConversationSnapshot) => {
+      const run = snapshot.workflowRuns?.runs.find((entry) => entry.runId === target.runId);
+      return (
+        run?.status === "errored" &&
+        run.error === (expectedErrorMessage ?? history.errorMessage) &&
+        run.resumable === undefined &&
+        run.stopReason === undefined &&
+        run.supersededBy === undefined
+      );
+    };
+    const committed = () =>
+      history.actualAdmission &&
+      history.runId === target.runId &&
+      !!this.publishers.get(sessionId) &&
+      postcondition(this.publishers.get(sessionId)!.getSnapshot());
+    const notify = () => wake?.();
+    owner.signal.addEventListener("abort", abort, { once: true });
+    generation.cancellations.add(dispose);
+    generation.observers.add(notify);
+    deadlineTimer = setTimeout(() => fail("timeout"), Math.max(0, owner.deadlineAt - owner.now()));
+    if (owner.signal.aborted) abort();
+    const work = async () => {
+      guard();
+      if (history.finalFailure) throw history.finalFailure;
+      if (committed()) return;
+      const raw = this.rawSequenceStates.get(sessionId);
+      if (raw?.seenEventIds.has(target.eventId) && !raw.failedEventById.has(target.eventId)) {
+        await new Promise<void>((done) => {
+          wake = done;
+          initialTimer = setTimeout(
+            done,
+            Math.min(
+              WORKFLOW_HOST_OBSERVATION_INITIAL_WAIT_MS,
+              Math.max(0, owner.deadlineAt - owner.now()),
+            ),
+          );
+          if (committed()) done();
+        });
+        if (initialTimer) clearTimeout(initialTimer);
+        wake = undefined;
+        guard();
+        if (committed()) return;
+      }
+      if (history.strictAttempted) throw error("target_not_applied");
+      history.strictAttempted = true;
+      phase = "old_flight";
+      for (;;) {
+        guard();
+        const old = this.hydrationInFlight.get(sessionId);
+        if (!old) break;
+        await old.catch(() => undefined);
+      }
+      guard();
+      buffer = { cancelled: false, eventIds: new Set(), rawEvents: [] };
+      this.hydrationBuffers.set(sessionId, buffer);
+      // strict 的种子失败必须安全上抛，不能先走 normal config 的原异常日志出口。
+      const publisher = this.ensurePublisher(sessionId, false);
+      flight = result.then(() => publisher);
+      void flight.catch(() => undefined);
+      buffer.flight = flight;
+      this.hydrationInFlight.set(sessionId, flight);
+      phase = "strict_load";
+      if (!this.host.loadWorkflowHostObservationProjection) throw error("runtime_unavailable");
+      const loaded = await this.host.loadWorkflowHostObservationProjection(
+        sessionId,
+        target,
+        owner,
+      );
+      guard();
+      const verified = loaded.verifiedTarget;
+      const parsed = verified && parseWorkflowRunProgressObservation(verified.payload);
+      if (
+        !verified ||
+        verified.id !== target.eventId ||
+        verified.sessionId !== sessionId ||
+        !Number.isInteger(verified.sequenceNumber) ||
+        verified.sequenceNumber <= 0 ||
+        verified.type !== SessionEventType.DynamicWorkflowRunProgress ||
+        parsed?.kind !== "host-reconciliation" ||
+        parsed.value.runId !== target.runId ||
+        loaded.sourceEventSeq === undefined ||
+        !Number.isInteger(loaded.sourceEventSeq) ||
+        loaded.sourceEventSeq < verified.sequenceNumber
+      )
+        throw error("identity_unverifiable");
+      expectedErrorMessage = parsed.value.payload.error.message;
+      const materializedTargets = loaded.events.filter((event) => event.id === target.eventId);
+      // cold merge 可以重编号，但不能用 journal 合成或同 id 的替代 payload 冒充原 raw receipt。
+      if (
+        materializedTargets.length !== 1 ||
+        !isDeepStrictEqual(
+          { ...materializedTargets[0], sequenceNumber: verified.sequenceNumber },
+          verified,
+        )
+      )
+        throw error("identity_unverifiable");
+      phase = "candidate";
+      const previous = this.rawSequenceStates.get(sessionId);
+      const excluded = new Set(previous?.failedEventById.keys());
+      excluded.delete(target.eventId);
+      const prepared = publisher.prepareRehydration(loaded.events, {
+        excludedEventIds: excluded,
+        requiredEventId: target.eventId,
+        onPayloadTooLarge: () => {},
+      });
+      const candidate = prepared.candidate;
+      if (loaded.configSeed) candidate.seedConfig(loaded.configSeed);
+      if (loaded.usageSeed) candidate.seedUsage(loaded.usageSeed);
+      if (loaded.subagentsSeed) candidate.seedSubagents(loaded.subagentsSeed);
+      candidate.seedSharedContextImport(loaded.sharedContextImport);
+      const state: RawSequenceState = {
+        sourceEventSeq: loaded.sourceEventSeq,
+        lastTransportSeq: candidate.getSnapshot().seq,
+        offset: candidate.getSnapshot().seq - loaded.sourceEventSeq,
+        seenEventIds: new Set(loaded.events.map((event) => String(event.id))),
+        appliedEventIds: new Set(prepared.appliedEventIds),
+        failedEventById: new Map(previous?.failedEventById),
+        pendingByRawSeq: new Map(),
+        recentRawEventsById: new Map(previous?.recentRawEventsById),
+      };
+      const tail = new Map<string, SessionEvent>();
+      for (const event of [
+        ...(previous?.recentRawEventsById.values() ?? []),
+        ...(previous?.pendingByRawSeq.values() ?? []),
+        ...buffer.rawEvents,
+      ]) {
+        if (event.sequenceNumber > state.sourceEventSeq || event.sequenceNumber <= 0)
+          tail.set(String(event.id), event);
+      }
+      for (const event of [...tail.values()].sort((a, b) => {
+        if (a.sequenceNumber > 0 && b.sequenceNumber > 0)
+          return a.sequenceNumber - b.sequenceNumber;
+        if (a.sequenceNumber > 0) return -1;
+        if (b.sequenceNumber > 0) return 1;
+        return 0;
+      })) {
+        if (state.seenEventIds.has(String(event.id))) continue;
+        if (event.sequenceNumber > 0 && event.sequenceNumber !== state.sourceEventSeq + 1)
+          throw error("target_not_applied");
+        state.seenEventIds.add(String(event.id));
+        state.recentRawEventsById.set(String(event.id), event);
+        if (event.sequenceNumber > 0) state.sourceEventSeq = event.sequenceNumber;
+        if (excluded.has(String(event.id))) continue;
+        candidate.ingest({ ...event, sequenceNumber: candidate.getSnapshot().seq + 1 });
+      }
+      if (state.sourceEventSeq < (previous?.sourceEventSeq ?? 0)) throw error("target_not_applied");
+      phase = "postcondition";
+      if (!prepared.appliedEventIds.includes(target.eventId)) throw error("target_not_applied");
+      if (!postcondition(candidate.getSnapshot())) throw error("postcondition_failed");
+      phase = "adopt";
+      guard();
+      if (
+        this.hydrationBuffers.get(sessionId) !== buffer ||
+        this.hydrationInFlight.get(sessionId) !== flight ||
+        this.publishers.get(sessionId) !== publisher
+      )
+        throw error("stale_owner");
+      state.appliedEventIds = new Set(prepared.appliedEventIds);
+      state.failedEventById.delete(target.eventId);
+      publisher.adoptPreparedRehydration(prepared);
+      // 原因：adopt 会保留 initialization 并抬升 transport seq；必须用最终水位建立 raw 偏移。
+      state.lastTransportSeq = publisher.getSnapshot().seq;
+      state.offset = state.lastTransportSeq - state.sourceEventSeq;
+      this.rawSequenceStates.set(sessionId, state);
+      const applied = new Set(prepared.appliedEventIds);
+      for (const event of [...loaded.events, ...tail.values()]) {
+        if (applied.has(String(event.id))) this.recordHostAdmission(sessionId, event);
+      }
+      this.hydratedSessions.add(sessionId);
+      phase = "delivery";
+      this.publishCurrentSummaryToIndex(sessionId, () => {
+        throw error("delivery_fault");
+      });
+      for (const state of this.flushStates.values()) {
+        if (state.sessionId !== sessionId || this.pausedConnections.has(state.connectionId))
+          continue;
+        if (state.timer) clearTimeout(state.timer);
+        state.timer = null;
+        const reservation = publisher.reserveFlush(state.subscriptionId);
+        if (reservation) this.emitReservation(reservation);
+      }
+      phase = "postcondition";
+      if (!committed()) throw error("postcondition_failed");
+    };
+    void work().then(
+      () => {
+        if (!active) return;
+        try {
+          guard();
+        } catch {
+          fail("stale_owner");
+          return;
+        }
+        active = false;
+        resolve({ strictAttempted: history.strictAttempted });
+        cleanup();
+      },
+      (failure: unknown) => {
+        fail(
+          failure instanceof WorkflowHostObservationCommitError
+            ? failure.reasonCode
+            : phase === "strict_load"
+              ? "strict_load_failed"
+              : phase === "delivery"
+                ? "delivery_fault"
+                : "apply_failed",
+        );
+      },
+    );
+    return result;
+  }
+
   private ingestNormalizedEvent(sessionId: string, event: SessionEvent): void {
-    const publisher = this.ensurePublisher(sessionId);
+    const hostObservation =
+      event.type === SessionEventType.DynamicWorkflowRunProgress &&
+      parseWorkflowRunProgressObservation(event.payload).kind === "host-reconciliation";
+    const publisher = this.ensurePublisher(sessionId, true, hostObservation);
     const promotedQueueRemoval =
       event.type === SessionEventType.TurnSteerDiscarded &&
       (event.payload as { reason?: string }).reason === "promoted";
@@ -1006,6 +1425,7 @@ export class ConversationV4Gateway {
             },
           )
         : [];
+    const previousAdmissionSeq = publisher.getSnapshot().seq;
     try {
       publisher.ingest(event);
     } catch (error) {
@@ -1018,6 +1438,8 @@ export class ConversationV4Gateway {
               { cause: error },
             );
       this.rejectProjectionEventCommit(sessionId, String(event.id), commitError);
+      if (hostObservation)
+        throw new WorkflowHostObservationCommitError("forward", "apply_failed", false);
       if (!(error instanceof ProjectionPayloadTooLargeError)) throw error;
       this.host.onError?.("v4.projection.payloadTooLarge", error);
       if (!this.projectionFaultedSessions.has(sessionId)) {
@@ -1030,6 +1452,12 @@ export class ConversationV4Gateway {
       }
       return;
     }
+    // 原因：nonthrow 不是 admission；必须同时证实本次序号实际推进。
+    if (
+      publisher.getSnapshot().seq === event.sequenceNumber &&
+      event.sequenceNumber > previousAdmissionSeq
+    )
+      this.recordHostAdmission(sessionId, event);
     this.resolveProjectionEventCommit(sessionId, String(event.id));
     // 原因：后台会话没有卡片/订阅时无法创建 guest。只在 live 投影提交后投递，
     // 从同一权威工具行取输入和 UI 描述；历史 hydration 直接写 publisher，不走此入口。
@@ -1122,6 +1550,37 @@ export class ConversationV4Gateway {
         ),
       );
     }
+    // raw ready 批次已预推进 cursor；已提交后的交付失败不能抛出中断后继事件或其它订阅。
+    if (hostObservation) {
+      let deliveryFault = false;
+      this.publishCurrentSummaryToIndex(sessionId, () => {
+        deliveryFault = true;
+      });
+      for (const state of this.flushStates.values()) {
+        if (state.sessionId !== sessionId || this.pausedConnections.has(state.connectionId))
+          continue;
+        try {
+          if (state.timer) clearTimeout(state.timer);
+          state.timer = null;
+          const reservation = publisher.reserveFlush(state.subscriptionId);
+          if (reservation) this.emitReservation(reservation);
+        } catch {
+          deliveryFault = true;
+        }
+      }
+      if (deliveryFault) {
+        try {
+          // 独立于 projection completed；只传固定原因，不传源异常或伪造 attempt 历史。
+          this.host.onError?.(
+            "v4.workflowHostObservation.delivery_fault",
+            new Error("delivery_fault"),
+          );
+        } catch {
+          /* 诊断器失败也不能阻断 raw drain。 */
+        }
+      }
+      return;
+    }
     for (const [routeKey, state] of this.flushStates) {
       if (state.sessionId !== sessionId) continue;
       this.scheduleFlush(routeKey, state, publisher);
@@ -1211,7 +1670,7 @@ export class ConversationV4Gateway {
    * hydration 完成后若没有下一条 runtime event，child 就永远停在 draft 基线，
    * task-index syncer 无法观察到 draft→visible，也就不会创建侧栏 task row。
    */
-  private publishCurrentSummaryToIndex(sessionId: string): void {
+  private publishCurrentSummaryToIndex(sessionId: string, onFailure?: () => void): void {
     // 这一次发布带的就是窗内合并后的当前摘要：待发的 trailing 到此被满足，不重复发帧。
     this.indexFanoutThrottle.notePublished(sessionId);
     const getWorkspaceId = this.host.getSessionWorkspaceId;
@@ -1228,9 +1687,10 @@ export class ConversationV4Gateway {
         conversationPublisher.getSnapshot(),
         this.resolveIndexMeta(sessionId),
       );
-      if (changed) this.flushIndex(workspaceId);
+      if (changed) this.flushIndex(workspaceId, undefined, onFailure);
     } catch (error) {
-      this.host.onError?.("v4.sessionsIndex.ingest", error);
+      if (onFailure) onFailure();
+      else this.host.onError?.("v4.sessionsIndex.ingest", error);
     }
   }
 
@@ -1251,7 +1711,7 @@ export class ConversationV4Gateway {
   }
 
   /** 把某 workspace index publisher 的未发增量帧推给所有列表订阅者。 */
-  private flushIndex(workspaceId: string, onlyConnectionId?: string): void {
+  private flushIndex(workspaceId: string, onlyConnectionId?: string, onFailure?: () => void): void {
     const publisher = this.indexPublishers.get(workspaceId);
     if (!publisher) return;
     for (const subscriptionId of publisher.subscriptionIds()) {
@@ -1268,7 +1728,8 @@ export class ConversationV4Gateway {
       try {
         this.emitReservation(reservation);
       } catch (error) {
-        this.host.onError?.("v4.sessionsIndex.emit", error);
+        if (onFailure) onFailure();
+        else this.host.onError?.("v4.sessionsIndex.emit", error);
       }
     }
   }
@@ -2914,6 +3375,7 @@ export class ConversationV4Gateway {
         `conversation session disposed while waiting for projection event commit: ${sessionId}`,
       ),
     );
+    this.disposeHostGeneration(sessionId);
     this.attachmentUploads.clearSession(sessionId);
     for (const [key, entry] of this.binaryReadCache) {
       if (entry.sessionId === sessionId) this.deleteBinaryReadCacheEntry(key);
@@ -2975,6 +3437,8 @@ export class ConversationV4Gateway {
 
   dispose(): void {
     this.disposed = true;
+    for (const sessionId of this.hostObservationGenerations.keys())
+      this.disposeHostGeneration(sessionId);
     this.localTtft.clear();
     for (const sessionId of this.projectionEventCommitWaiters.keys()) {
       this.rejectProjectionEventWaiters(
@@ -3034,7 +3498,11 @@ export class ConversationV4Gateway {
     return reservation.frame;
   }
 
-  private ensurePublisher(sessionId: string): ConversationTopicPublisher {
+  private ensurePublisher(
+    sessionId: string,
+    seedConfig = true,
+    hostObservation = false,
+  ): ConversationTopicPublisher {
     let publisher = this.publishers.get(sessionId);
     if (!publisher) {
       publisher = new ConversationTopicPublisher(sessionId, this.createLogEpoch(sessionId), {
@@ -3042,7 +3510,7 @@ export class ConversationV4Gateway {
       });
       this.publishers.set(sessionId, publisher);
       // config 种子：创建即注入 runtime 真值（不产 delta / 不 bump revision）。
-      this.seedPublisherConfig(sessionId, publisher);
+      if (seedConfig) this.seedPublisherConfig(sessionId, publisher, hostObservation);
     }
     return publisher;
   }
@@ -3053,13 +3521,19 @@ export class ConversationV4Gateway {
    * hydration 收尾两处都调用——创建时机可能早于 record 完全就位（createSessionRecord
    * 事件接线期间），hydration 处补一次兜住该窗口。
    */
-  private seedPublisherConfig(sessionId: string, publisher: ConversationTopicPublisher): void {
+  private seedPublisherConfig(
+    sessionId: string,
+    publisher: ConversationTopicPublisher,
+    hostObservation = false,
+  ): void {
     const getSeed = this.host.getSessionConfigSeed;
     if (!getSeed) return;
     try {
       const seed = getSeed.call(this.host, sessionId);
       if (seed) publisher.seedConfig(seed);
     } catch (error) {
+      if (hostObservation)
+        throw new WorkflowHostObservationCommitError("forward", "apply_failed", false);
       this.host.onError?.("v4.configSeed", error);
     }
   }
@@ -3236,32 +3710,34 @@ export class ConversationV4Gateway {
     persistedMessages?: MessageWithParts[],
     forceRebuild = false,
   ): Promise<ConversationTopicPublisher> {
+    const inFlight = this.hydrationInFlight.get(sessionId);
+    if (inFlight) return inFlight;
     const existing = this.publishers.get(sessionId);
     // 已 hydrate 过的 live publisher：直接复用（避免重复重建 / 双计）。
     if (!forceRebuild && existing && this.hydratedSessions.has(sessionId))
       return Promise.resolve(existing);
 
-    const inFlight = this.hydrationInFlight.get(sessionId);
-    if (inFlight) return inFlight;
     const buffer: HydrationBuffer = {
       cancelled: false,
       eventIds: new Set<string>(),
       rawEvents: [],
     };
     this.hydrationBuffers.set(sessionId, buffer);
-    const hydration = this.performHydration(
-      sessionId,
-      buffer,
-      persistedMessages,
-      forceRebuild,
-    ).finally(() => {
-      if (this.hydrationBuffers.get(sessionId) === buffer) {
-        this.hydrationBuffers.delete(sessionId);
-      }
-      if (this.hydrationInFlight.get(sessionId) === hydration) {
-        this.hydrationInFlight.delete(sessionId);
-      }
-    });
+    const generation = this.hostGeneration(sessionId);
+    // 原因：loader 可同步触发 stored handoff；先登记 slot，再进入宿主读取，避免重入并行恢复。
+    const hydration = Promise.resolve()
+      .then(() =>
+        this.performHydration(sessionId, buffer, persistedMessages, forceRebuild, generation),
+      )
+      .finally(() => {
+        if (this.hydrationBuffers.get(sessionId) === buffer) {
+          this.hydrationBuffers.delete(sessionId);
+        }
+        if (this.hydrationInFlight.get(sessionId) === hydration) {
+          this.hydrationInFlight.delete(sessionId);
+        }
+      });
+    buffer.flight = hydration;
     this.hydrationInFlight.set(sessionId, hydration);
     return hydration;
   }
@@ -3269,9 +3745,20 @@ export class ConversationV4Gateway {
   private async performHydration(
     sessionId: string,
     buffer: HydrationBuffer,
-    persistedMessages?: MessageWithParts[],
-    forceRebuild = false,
+    persistedMessages: MessageWithParts[] | undefined,
+    forceRebuild: boolean,
+    generation: HostObservationGeneration,
   ): Promise<ConversationTopicPublisher> {
+    const assertCurrent = () => {
+      if (
+        this.disposed ||
+        buffer.cancelled ||
+        this.hostObservationGenerations.get(sessionId) !== generation ||
+        this.hydrationInFlight.get(sessionId) !== buffer.flight
+      )
+        throw new Error("v4 hydration owner expired");
+    };
+    assertCurrent();
     const existingAtStart = this.publishers.get(sessionId);
     const liveSessionAtStart = this.host.sessionExists(sessionId);
     const hydrationStartedAt = performance.now();
@@ -3301,9 +3788,7 @@ export class ConversationV4Gateway {
         `durationMs=${String(Math.max(0, Math.round(performance.now() - hydrationStartedAt)))}`,
     );
 
-    if (this.disposed || buffer.cancelled) {
-      throw new Error(`v4 hydration cancelled for session ${sessionId}`);
-    }
+    assertCurrent();
 
     // assistant 守恒：拒收过正文流的 publisher 不可信——它建立于
     // TurnStarted 之后，缺段无法用 append-only 重放补进中间位置，只能整体重建。
@@ -3330,6 +3815,7 @@ export class ConversationV4Gateway {
         persistedMessages,
         loaded.usageSeed,
       );
+      assertCurrent();
       this.hydratedSessions.add(sessionId);
       this.publishCurrentSummaryToIndex(sessionId);
       return latestPublisher;
@@ -3440,6 +3926,7 @@ export class ConversationV4Gateway {
     if (loaded.usageSeed === undefined) {
       await this.seedPublisherUsage(sessionId, publisher, persistedMessages);
     }
+    assertCurrent();
     for (const [routeKey, state] of this.flushStates) {
       if (state.sessionId !== sessionId) continue;
       if (!publisher.hasSubscription(state.subscriptionId, state.connectionId)) continue;

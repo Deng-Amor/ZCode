@@ -76,6 +76,7 @@ import {
   resolveDynamicWorkflowJournalStore,
   type DynamicWorkflowActorRuntimeInput,
 } from "../src/app/dynamic-workflow-run-service.js";
+import * as workflowRunLaunch from "../src/app/dynamic-workflow-run-launch.js";
 import {
   createWorkflowConcurrencyGovernor,
   type WorkflowConcurrencyPort,
@@ -254,6 +255,8 @@ function scriptedModelAdapter(
 }
 
 interface HarnessOptions {
+  prepareController?: Parameters<typeof createDynamicWorkflowRunService>[0]["prepareController"];
+  fileSystemPort?: Parameters<typeof createDynamicWorkflowRunService>[0]["fileSystemPort"];
   actorScripts?: Record<string, ActorPlan[]>;
   availableParallelism?: () => number;
   /** 进程级治理器的窄端口；缺省不接（actor 不受闸门约束，launch 也不登记上界）。 */
@@ -601,7 +604,10 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       return runtime;
     },
     executionPort: options.executionPort ?? unsupportedExecutionPort(),
-    fileSystemPort,
+    ...(options.prepareController === undefined
+      ? {}
+      : { prepareController: options.prepareController }),
+    fileSystemPort: options.fileSystemPort ?? fileSystemPort,
     journal,
     logger: logger as never,
     onRunEvent: (progress, routing) => {
@@ -677,6 +683,22 @@ async function settle(harness: Harness, runId: string): Promise<void> {
   await harness.service.waitForTask(runId);
 }
 
+/** 旧合同校准的五项用例专用：授权 gate、观察与清理都不能靠测试外层超时兜底。 */
+async function legacyFixtureDeadline<T>(work: Promise<T>, stage: string): Promise<T> {
+  const waitMs = 5_000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${stage} exceeded ${waitMs}ms`)), waitMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 describe("dynamic workflow run service — 在飞计数与结算订阅（registry 安全边界的读面）", () => {
   it("submit 后 countLiveRuns 为 1；结算后归零，监听器恰好收到一次、计数已扣掉本 run", async () => {
     const harness = makeHarness();
@@ -688,7 +710,7 @@ describe("dynamic workflow run service — 在飞计数与结算订阅（registr
     expect(harness.service.countLiveRuns()).toBe(0);
     const runId = await submitRun(harness, {
       cwd: TEST_CWD,
-      parentSessionId: createSessionId("live-count-parent"),
+      parentSessionId: HARNESS_PARENT_SESSION,
       scriptText: TYPED_SCRIPT,
       toolCallId: createToolCallId("live-count-call"),
       trace: traceFor("live-count"),
@@ -705,7 +727,7 @@ describe("dynamic workflow run service — 在飞计数与结算订阅（registr
     unsubscribe();
     const second = await submitRun(harness, {
       cwd: TEST_CWD,
-      parentSessionId: createSessionId("live-count-parent"),
+      parentSessionId: HARNESS_PARENT_SESSION,
       scriptText: TYPED_SCRIPT,
       toolCallId: createToolCallId("live-count-call-2"),
       trace: traceFor("live-count-2"),
@@ -727,7 +749,7 @@ describe("dynamic workflow run service — 在飞计数与结算订阅（registr
 
     const runId = await submitRun(harness, {
       cwd: TEST_CWD,
-      parentSessionId: createSessionId("listener-throw-parent"),
+      parentSessionId: HARNESS_PARENT_SESSION,
       scriptText: TYPED_SCRIPT,
       toolCallId: createToolCallId("listener-throw-call"),
       trace: traceFor("listener-throw"),
@@ -751,7 +773,7 @@ describe("dynamic workflow run service — 在飞计数与结算订阅（registr
  *
  * Bug 根因（2026-09-15）：引擎活在会话 App 的闭包里、不进 runtime task registry，而常驻池只读
  * registry——一个仍在跑的 run 被读成 idle，App 被关闭（10 分钟空闲），resume 起了第二个引擎。
- * 登记必须落在**启动的同一同步片**，所以下面两条用例都在 await 入口 promise **之前**断言。
+ * 授权等待还没有启动引擎；登记必须落在真实 launch 的同一同步片，不能把入口首个 await 前当启动点。
  */
 describe("dynamic workflow run service — 常驻登记（Engine ownership 规则一）", () => {
   /** 记录登记过的 promise 与它们是否已结算；后者证明登记的不是注册表条目上的占位 promise。 */
@@ -775,9 +797,44 @@ describe("dynamic workflow run service — 常驻登记（Engine ownership 规�
     };
   }
 
-  it("submit 在同一同步片登记恰好一次，登记的 promise 随 run 结算解除", async () => {
+  function authorizationGate() {
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    return {
+      entered: entered.promise,
+      release: () => released.resolve(),
+      prepareController: async () => {
+        entered.resolve();
+        await legacyFixtureDeadline(released.promise, "prepareController release");
+        return undefined;
+      },
+    };
+  }
+
+  function observeRealLaunch(hook: ReturnType<typeof recorder>) {
+    const observed = Promise.withResolvers<number>();
+    const originalLaunch = workflowRunLaunch.launchDynamicWorkflowRun;
+    const spy = vi
+      .spyOn(workflowRunLaunch, "launchDynamicWorkflowRun")
+      .mockImplementation((input) => {
+        const settlement = originalLaunch(input);
+        // 真 launch 返回后先排入观察；若登记被推迟到下一微任务，此处捕获的将是 0。
+        queueMicrotask(() => observed.resolve(hook.works.length));
+        return settlement;
+      });
+    return { observed: observed.promise, spy };
+  }
+
+  it("submit 授权等待不登记，launch 同一同步片登记恰一次，promise 随 run 结算解除", async () => {
     const hook = recorder();
-    const harness = makeHarness({ registerResidencyBlockingWork: hook.register });
+    const gate = authorizationGate();
+    const journal = new SweepableJournalStore();
+    const harness = makeHarness({
+      journal,
+      prepareController: gate.prepareController,
+      registerResidencyBlockingWork: hook.register,
+    });
+    const launch = observeRealLaunch(hook);
 
     const submitted = harness.service.submit({
       cwd: TEST_CWD,
@@ -785,24 +842,46 @@ describe("dynamic workflow run service — 常驻登记（Engine ownership 规�
       scriptText: TYPED_SCRIPT,
       trace: traceFor("residency-submit"),
     });
-    // submit 的 promise 尚未被 await，登记已经发生：落在这里的常驻再平衡看得见这个 run。
-    expect(hook.works).toHaveLength(1);
+    void submitted.catch(() => {});
+    try {
+      await legacyFixtureDeadline(gate.entered, "submit authorization entered");
+      expect(hook.works).toHaveLength(0);
+      expect(harness.service.countLiveRuns()).toBe(0);
+      expect(journal.listRunsByParentSession(HARNESS_PARENT_SESSION, 10)).toEqual([]);
+      expect(launch.spy).not.toHaveBeenCalled();
+      gate.release();
+      const runId = (await legacyFixtureDeadline(submitted, "submit admission")).runId;
+      expect(await legacyFixtureDeadline(launch.observed, "submit launch microtask")).toBe(1);
+      expect(launch.spy).toHaveBeenCalledTimes(1);
+      expect(hook.works).toHaveLength(1);
+      expect(hook.settled[0]).toBe(false);
+      expect(harness.service.countLiveRuns()).toBe(1);
 
-    const runId = (await submitted).runId;
-    // 登记的是真结算 promise，不是条目上那个同步可见的占位 Promise.resolve。
-    expect(hook.settled[0]).toBe(false);
-    expect(harness.service.countLiveRuns()).toBe(1);
-
-    await settle(harness, runId);
-    await hook.works[0];
-    expect(hook.settled[0]).toBe(true);
-    // 恰好一次：submit 只经 trackSettlement 这一个登记点。
-    expect(hook.works).toHaveLength(1);
-    expect(harness.journal.getRun(runId)?.status).toBe("completed");
+      await legacyFixtureDeadline(settle(harness, runId), "submit settlement");
+      await legacyFixtureDeadline(hook.works[0]!, "submit residency settlement");
+      expect(hook.settled[0]).toBe(true);
+      expect(hook.works).toHaveLength(1);
+      expect(journal.getRun(runId)?.status).toBe("completed");
+    } finally {
+      gate.release();
+      try {
+        await legacyFixtureDeadline(
+          submitted.catch(() => undefined),
+          "submit cleanup admission",
+        );
+      } finally {
+        try {
+          await legacyFixtureDeadline(harness.service.close(), "submit cleanup close");
+        } finally {
+          launch.spy.mockRestore();
+        }
+      }
+    }
   });
 
-  it("resume 同样在同一同步片登记一次（登记的是新起的那条结算）", async () => {
+  it("resume 授权等待不登记，launch 同一同步片登记恰一次（登记的是新起的结算）", async () => {
     const hook = recorder();
+    const gate = authorizationGate();
     const journal = new SweepableJournalStore();
     const runId = "dwfrun-residency-resume";
     preloadRun(journal, {
@@ -815,20 +894,51 @@ describe("dynamic workflow run service — 常驻登记（Engine ownership 规�
     });
     const harness = makeHarness({
       journal,
+      parentSessionId: HARNESS_PARENT_SESSION,
+      prepareController: gate.prepareController,
       registerResidencyBlockingWork: hook.register,
     });
-
+    const before = journal.getRun(runId);
+    const launch = observeRealLaunch(hook);
     const resumed = harness.service.resume!(runId);
-    expect(hook.works).toHaveLength(1);
+    void resumed.catch(() => {});
+    try {
+      await legacyFixtureDeadline(gate.entered, "resume authorization entered");
+      expect(hook.works).toHaveLength(0);
+      expect(harness.service.countLiveRuns()).toBe(0);
+      expect(journal.getRun(runId)).toEqual(before);
+      expect(launch.spy).not.toHaveBeenCalled();
+      gate.release();
+      expect(await legacyFixtureDeadline(resumed, "resume admission")).toMatchObject({
+        ok: true,
+        runId,
+      });
+      expect(await legacyFixtureDeadline(launch.observed, "resume launch microtask")).toBe(1);
+      expect(launch.spy).toHaveBeenCalledTimes(1);
+      expect(hook.works).toHaveLength(1);
+      expect(hook.settled[0]).toBe(false);
+      expect(harness.service.countLiveRuns()).toBe(1);
 
-    expect(await resumed).toMatchObject({ ok: true, runId });
-    expect(hook.settled[0]).toBe(false);
-
-    await settle(harness, runId);
-    await hook.works[0];
-    expect(hook.settled[0]).toBe(true);
-    expect(hook.works).toHaveLength(1);
-    expect(harness.journal.getRun(runId)?.status).toBe("completed");
+      await legacyFixtureDeadline(settle(harness, runId), "resume settlement");
+      await legacyFixtureDeadline(hook.works[0]!, "resume residency settlement");
+      expect(hook.settled[0]).toBe(true);
+      expect(hook.works).toHaveLength(1);
+      expect(journal.getRun(runId)?.status).toBe("completed");
+    } finally {
+      gate.release();
+      try {
+        await legacyFixtureDeadline(
+          resumed.catch(() => undefined),
+          "resume cleanup admission",
+        );
+      } finally {
+        try {
+          await legacyFixtureDeadline(harness.service.close(), "resume cleanup close");
+        } finally {
+          launch.spy.mockRestore();
+        }
+      }
+    }
   });
 });
 
@@ -1029,6 +1139,7 @@ describe("dynamic workflow run service — 请求的并发上界", () => {
     // 边界记账，与既有 amend 用例同款）。
     const harness = makeHarness({ availableParallelism: TEN_CORES, hangActors: true });
     const predecessor = await submitRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       maxConcurrency: 2,
       scriptText: TYPED_SCRIPT,
@@ -1039,6 +1150,7 @@ describe("dynamic workflow run service — 请求的并发上界", () => {
     });
 
     const amended = await amendRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       maxConcurrency: 5,
       predecessorRunId: predecessor,
@@ -1053,6 +1165,7 @@ describe("dynamic workflow run service — 请求的并发上界", () => {
 
     // 同一个前驱、这次不带字段：后继跑在默认并发上（缺席 ≠ 沿用前驱的 2）。
     const inherited = await amendRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       predecessorRunId: predecessor,
       scriptText: TYPED_SCRIPT,
@@ -1190,6 +1303,7 @@ describe("dynamic workflow run service — retuneConcurrency", () => {
   /** 起一个挂住的 run（actor 永不返回 ⇒ run 一直在飞），并等引擎把 dwf_run 行落下来。 */
   async function liveRun(harness: Harness, name: string, maxConcurrency?: number): Promise<string> {
     const runId = await submitRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       scriptText: TYPED_SCRIPT,
       ...(maxConcurrency === undefined ? {} : { maxConcurrency }),
@@ -1784,6 +1898,7 @@ describe("dynamic workflow run service — 本 run 的子代理模型", () => {
   it("amend 用请求里的值，绝不继承前驱的（三态归一在工具层）", async () => {
     const harness = makeHarness({ hangActors: true });
     const predecessor = await submitRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       scriptText: TYPED_SCRIPT,
       subagentModel: FLASH,
@@ -1795,6 +1910,7 @@ describe("dynamic workflow run service — 本 run 的子代理模型", () => {
 
     // 换一个模型：后继落新值。
     const amended = await amendRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       predecessorRunId: predecessor,
       scriptText: TYPED_SCRIPT,
@@ -1810,6 +1926,7 @@ describe("dynamic workflow run service — 本 run 的子代理模型", () => {
     // 同一个前驱、这次不带字段：后继回到会话模型（缺席 ≠ 沿用前驱的 FLASH）。端口若在这里
     // 继承一次，工具面的 `null`（「回到会话模型」）就永远到不了落库这一步。
     const cleared = await amendRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       predecessorRunId: predecessor,
       scriptText: TYPED_SCRIPT,
@@ -1876,6 +1993,7 @@ describe("dynamic workflow run service — 本 run 的子代理模型", () => {
     // resume 沿用记下来的那一份，与 caps / args 同一条纪律：一次 run 的身份包含它跑在哪个模型上。
     const harness = makeHarness({ hangActors: true });
     const runId = await submitRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       scriptText: TYPED_SCRIPT,
       subagentModel: FLASH,
@@ -1930,6 +2048,7 @@ describe("dynamic workflow run service — 本 run 的子代理模型", () => {
         sessionStore: store as never,
       });
       const runA = await submitRun(before, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         scriptText: amendScript("second question"),
         trace: traceFor("subagent-model-over-pin-a"),
@@ -1949,6 +2068,7 @@ describe("dynamic workflow run service — 本 run 的子代理模型", () => {
         sessionStore: store as never,
       });
       const amended = await amendRun(after, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         predecessorRunId: runA,
         scriptText: amendScript("second question, revised"),
@@ -2124,6 +2244,7 @@ describe("dynamic workflow run service — 脚本点名的模型", () => {
   it("resume 从 run-launched 读回同一张表交给工厂，并抄进注册表条目", async () => {
     const harness = makeHarness({ hangActors: true });
     const runId = await submitRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       scriptText: ROUTED_SCRIPT,
       modelBindings: { "GLM-5.3-Flash": LIGHT, "GLM-5.3$high": STRONG },
@@ -2212,6 +2333,7 @@ describe("dynamic workflow run service — 本 run 子代理的权限模式", ()
     let mode: CollaborationMode = "guarded";
     const harness = makeHarness({ hangActors: true, permissionMode: () => mode });
     const runId = await submitRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       scriptText: TYPED_SCRIPT,
       trace: traceFor("permission-mode-resume"),
@@ -2237,6 +2359,7 @@ describe("dynamic workflow run service — 本 run 子代理的权限模式", ()
     let mode: CollaborationMode = "yolo";
     const harness = makeHarness({ hangActors: true, permissionMode: () => mode });
     const predecessor = await submitRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       scriptText: TYPED_SCRIPT,
       trace: traceFor("permission-mode-amend-a"),
@@ -2248,6 +2371,7 @@ describe("dynamic workflow run service — 本 run 子代理的权限模式", ()
 
     mode = "guarded";
     const guarded = await amendRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       predecessorRunId: predecessor,
       scriptText: TYPED_SCRIPT,
@@ -2261,6 +2385,7 @@ describe("dynamic workflow run service — 本 run 子代理的权限模式", ()
 
     mode = "build";
     const relaxed = await amendRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       predecessorRunId: guarded.runId,
       scriptText: TYPED_SCRIPT,
@@ -2397,6 +2522,7 @@ describe("dynamic workflow run service — 本 run 的脚本文件", () => {
   it("amend 用请求里的路径，绝不继承前驱的（不给即缺席，不是沿用）", async () => {
     const harness = makeHarness({ hangActors: true });
     const predecessor = await submitRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       scriptText: TYPED_SCRIPT,
       scriptPath: DRAFT,
@@ -2407,6 +2533,7 @@ describe("dynamic workflow run service — 本 run 的脚本文件", () => {
     });
 
     const amended = await amendRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       predecessorRunId: predecessor,
       scriptText: TYPED_SCRIPT,
@@ -2422,6 +2549,7 @@ describe("dynamic workflow run service — 本 run 的脚本文件", () => {
     // 同一个前驱、这次不带字段：后继没有文件（缺席 ≠ 沿用前驱的 DRAFT）。前驱的路径指向的
     // 是旧脚本，端口若在这里继承一次，模型下次就会去编辑一个已经不在跑的文件。
     const cleared = await amendRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       predecessorRunId: predecessor,
       scriptText: TYPED_SCRIPT,
@@ -2438,6 +2566,7 @@ describe("dynamic workflow run service — 本 run 的脚本文件", () => {
   it("resume 从 run-launched 事件读回路径抄进条目：读面照旧「有条目就读条目」", async () => {
     const harness = makeHarness({ hangActors: true });
     const runId = await submitRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       scriptText: TYPED_SCRIPT,
       scriptPath: DRAFT,
@@ -2616,25 +2745,31 @@ describe("dynamic workflow run service — 产物存储的接线", () => {
     const { store, writes } = recordingArtifactStore();
     const harness = makeHarness({ artifactStore: store });
 
-    const runId = await submitRun(harness, {
-      cwd: TEST_CWD,
-      parentSessionId: createSessionId("some-other-session"),
-      scriptText: ARTIFACT_SCRIPT,
-      trace: traceFor("artifact-wiring"),
-    });
-    await settle(harness, runId);
+    try {
+      const runId = await legacyFixtureDeadline(
+        submitRun(harness, {
+          cwd: TEST_CWD,
+          parentSessionId: HARNESS_PARENT_SESSION,
+          scriptText: ARTIFACT_SCRIPT,
+          trace: traceFor("artifact-wiring"),
+        }),
+        "artifact wiring submit",
+      );
+      await legacyFixtureDeadline(settle(harness, runId), "artifact wiring settlement");
 
-    expect(harness.journal.getRun(runId)?.status).toBe("completed");
-    expect(writes).toHaveLength(1);
-    expect(writes[0]).toMatchObject({
-      // **本服务的**父会话，不是 submit 请求里那个可选的 parentSessionId：生产里两者同值，
-      // 而只有前者是必填的（字节写进哪个会话的目录不该有 undefined 分支）。
-      sessionId: HARNESS_PARENT_SESSION,
-      toolName: "CreateWorkflow",
-      retention: "project",
-      contentType: "text/markdown",
-    });
-    expect(String(writes[0]?.toolCallId)).toBe(`${runId}:artifact#1@1`);
+      expect(harness.journal.getRun(runId)?.status).toBe("completed");
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).toMatchObject({
+        // 请求与服务 owner 必须一致；产物存储会话仍由本服务固定 owner 提供。
+        sessionId: HARNESS_PARENT_SESSION,
+        toolName: "CreateWorkflow",
+        retention: "project",
+        contentType: "text/markdown",
+      });
+      expect(String(writes[0]?.toolCallId)).toBe(`${runId}:artifact#1@1`);
+    } finally {
+      await legacyFixtureDeadline(harness.service.close(), "artifact wiring cleanup");
+    }
   });
 
   it("不接 store 的装配里，发布以 ArtifactStoreUnavailable 拒绝而 run 照常结算", async () => {
@@ -2791,13 +2926,50 @@ describe("dynamic workflow run service — 用户面产物的读面", () => {
   });
 
   it("授权负例：run 的父会话不是本服务的 ⇒ 拒绝，且 store 一次都没被碰", async () => {
-    // 这是 spec 行 177 的授权链第 ② 步。服务实例按父会话构造，一个别的会话的 run 的字节
-    // 绝不能经本服务流出去。
-    const { harness, runId, reads } = await runMixed({
-      parentSessionId: createSessionId("some-other-session"),
-    });
-    expect(await harness.service.readArtifact!(runId, "summary", 1)).toBeUndefined();
-    expect(reads).toEqual([]);
+    // foreign owner 真实造数并读回作阳性对照；本 owner 不能先越权 submit 来伪造读取负例。
+    const journal = new SweepableJournalStore();
+    const { store, reads } = readableArtifactStore();
+    const foreignParent = createSessionId("some-other-session");
+    const foreign = makeHarness({ journal, artifactStore: store, parentSessionId: foreignParent });
+    let reader: Harness | undefined;
+    try {
+      const runId = await legacyFixtureDeadline(
+        submitRun(foreign, {
+          cwd: TEST_CWD,
+          parentSessionId: foreignParent,
+          scriptText: MIXED_SCRIPT,
+          trace: traceFor("artifact-foreign-owner"),
+        }),
+        "foreign artifact submit",
+      );
+      await legacyFixtureDeadline(settle(foreign, runId), "foreign artifact settlement");
+      expect(journal.getRun(runId)).toMatchObject({
+        parentSessionId: foreignParent,
+        status: "completed",
+      });
+      expect(journal.listArtifactRows(runId)).toContainEqual(
+        expect.objectContaining({
+          status: "completed",
+          result: expect.objectContaining({ id: "summary", version: 1, uri: expect.any(String) }),
+        }),
+      );
+      const ownRead = await foreign.service.readArtifact!(runId, "summary", 1);
+      expect(new TextDecoder().decode(ownRead!.bytes)).toBe("# 第一版");
+      expect(reads).toHaveLength(1);
+      const readsBeforeForeignRequest = [...reads];
+      reader = makeHarness({
+        journal,
+        artifactStore: store,
+        parentSessionId: HARNESS_PARENT_SESSION,
+      });
+      expect(await reader.service.readArtifact!(runId, "summary", 1)).toBeUndefined();
+      expect(reads).toEqual(readsBeforeForeignRequest);
+    } finally {
+      await legacyFixtureDeadline(
+        Promise.all([foreign.service.close(), reader?.service.close()]),
+        "artifact read cleanup",
+      );
+    }
   });
 
   it("授权负例：未知 runId / 未知 artifactId / 未知版本 ⇒ 拒绝，store 未被碰", async () => {
@@ -6152,6 +6324,7 @@ describe("dynamic workflow run service — amend 的门", () => {
   it("前驱仍在飞 → 停下成 stopped(superseded, supersededBy)、等结算、再启动后继", async () => {
     const harness = makeHarness({ hangActors: true });
     const runA = await submitRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       name: "triage",
       scriptText: TYPED_SCRIPT,
@@ -6163,6 +6336,7 @@ describe("dynamic workflow run service — amend 的门", () => {
     });
 
     const amended = await amendRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       predecessorRunId: runA,
       scriptText: TYPED_SCRIPT,
@@ -6208,6 +6382,7 @@ describe("dynamic workflow run service — amend 的门", () => {
   it("预检失败时在飞前驱不被停下", async () => {
     const harness = makeHarness({ hangActors: true });
     const runA = await submitRun(harness, {
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       scriptText: TYPED_SCRIPT,
       trace: traceFor("amend-preflight-a"),
@@ -6230,6 +6405,7 @@ describe("dynamic workflow run service — amend 的门", () => {
     });
 
     const result = await harness.service.amend!({
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       predecessorRunId: runA,
       scriptText: TYPED_SCRIPT,
@@ -6246,7 +6422,12 @@ describe("dynamic workflow run service — amend 的门", () => {
   it("前驱的已完结 ask 缺边界 marker → missing_boundaries", async () => {
     const journal = new SweepableJournalStore();
     const harness = makeHarness({ journal });
-    preloadRun(journal, { runId: "dwfrun-old", scriptText: TYPED_SCRIPT, status: "completed" });
+    preloadRun(journal, {
+      parentSessionId: HARNESS_PARENT_SESSION,
+      runId: "dwfrun-old",
+      scriptText: TYPED_SCRIPT,
+      status: "completed",
+    });
     journal.putActor({
       runId: "dwfrun-old",
       siteId: "actor#1",
@@ -6269,6 +6450,7 @@ describe("dynamic workflow run service — amend 的门", () => {
     });
 
     const result = await harness.service.amend!({
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       predecessorRunId: "dwfrun-old",
       scriptText: TYPED_SCRIPT,
@@ -6282,9 +6464,15 @@ describe("dynamic workflow run service — amend 的门", () => {
   it.each(["completed", "errored", "stopped"] as const)("终态 %s 的前驱通过门", async (status) => {
     const journal = new SweepableJournalStore();
     const harness = makeHarness({ journal });
-    preloadRun(journal, { runId: `dwfrun-${status}`, scriptText: TYPED_SCRIPT, status });
+    preloadRun(journal, {
+      parentSessionId: HARNESS_PARENT_SESSION,
+      runId: `dwfrun-${status}`,
+      scriptText: TYPED_SCRIPT,
+      status,
+    });
 
     const result = await harness.service.amend!({
+      parentSessionId: HARNESS_PARENT_SESSION,
       cwd: TEST_CWD,
       predecessorRunId: `dwfrun-${status}`,
       scriptText: TYPED_SCRIPT,
@@ -6308,9 +6496,11 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "zcode-dwf-amend-keep-"));
     const store = await createSqliteSessionStore({ dbPath: join(tempRoot, "session.sqlite") });
     const journal = new SweepableJournalStore();
+    let before: Harness | undefined;
+    let after: Harness | undefined;
     try {
       const script = amendScript("second question");
-      const before = makeHarness({
+      before = makeHarness({
         actorScripts: {
           "actor#1@1": [
             { kind: "submit", result: { text: "one" } },
@@ -6318,10 +6508,12 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
           ],
         },
         journal,
+        parentSessionId: HARNESS_PARENT_SESSION,
         sessionStore: store as never,
       });
       const runA = await submitRun(before, {
         cwd: TEST_CWD,
+        parentSessionId: HARNESS_PARENT_SESSION,
         scriptText: script,
         trace: traceFor("amend-keep-predecessor"),
       });
@@ -6329,12 +6521,26 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
       expect(journal.getRun(runA)?.caps.maxConcurrency).not.toBe(1);
 
       // 修订 run 的 actor 没有任何脚本化回答：只要有一问转 live，它就拿不到结果。
-      const after = makeHarness({ journal, sessionStore: store as never });
+      after = makeHarness({
+        journal,
+        parentSessionId: HARNESS_PARENT_SESSION,
+        sessionStore: store as never,
+      });
       const registry = createToolRegistry();
       const amendEntry = builtInTools.find((entry) => entry.metadata.name === "AmendWorkflow");
       expect(amendEntry).toBeDefined();
-      registry.register(amendEntry!);
-      const sessionId = createSessionId("amend-keep-tool");
+      const resolveInput = amendEntry!.resolveInput;
+      expect(resolveInput).toBeTypeOf("function");
+      const resolvedInputs: unknown[] = [];
+      registry.register({
+        ...amendEntry!,
+        resolveInput: async (input, context) => {
+          const resolved = await resolveInput!(input, context);
+          resolvedInputs.push(resolved);
+          return resolved;
+        },
+      });
+      const sessionId = HARNESS_PARENT_SESSION;
       const turnId = createTurnId("amend-keep-tool");
       const traceContext = createRootTraceContext({ sessionId, turnId });
       const permissionAsks: string[] = [];
@@ -6342,7 +6548,7 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
         emitEvent: async () => {},
         dynamicWorkflowRunPort: after.service,
         mode: "build",
-        // 前驱不属于本会话（submit 没带 parentSessionId）：会弹窗，这里一律同意。
+        // 同 owner、非 user stop 且没有新 provider，真实审批规则不应弹窗。
         permissionBroker: {
           async requestPermission(request) {
             permissionAsks.push(JSON.stringify(request));
@@ -6367,9 +6573,13 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
       );
 
       expect(result.success).toBe(true);
-      // 确认窗审的是将要跑的那一份脚本（回填进入参），并带着「沿用」的 flag。
-      expect(permissionAsks).toHaveLength(1);
-      expect(permissionAsks[0]).toContain('"script_inherited":true');
+      // 继承 flag 由真实 resolveInput 生成；不再把同 owner 的温启动冒称确认窗用例。
+      expect(resolvedInputs).toHaveLength(1);
+      expect(resolvedInputs[0]).toMatchObject({
+        result: true,
+        input: { script, predecessor: { script_inherited: true, owned_by_this_session: true } },
+      });
+      expect(permissionAsks).toHaveLength(0);
       const output = result.output as { backgroundTaskId?: string; response: string };
       const runB = output.backgroundTaskId;
       expect(runB).toBeDefined();
@@ -6380,6 +6590,8 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
       expect(rowB?.scriptText).toBe(script);
       expect(rowB?.caps.maxConcurrency).toBe(1);
       expect(rowB?.resumedFrom).toBe(runA);
+      expect(journal.getRun(runA)?.parentSessionId).toBe(HARNESS_PARENT_SESSION);
+      expect(rowB?.parentSessionId).toBe(HARNESS_PARENT_SESSION);
       // 沿用的脚本也有家（docs/dynamic-workflow/launch.md「Provenance」）：前驱没记过文件，所以工具
       // 把存档的脚本落成草稿，新 run 记的就是它——下一次修订去编辑这个文件，不必内联重抄。
       const recordedScriptPath = (await after.service.getTask(runB!))?.scriptPath;
@@ -6393,8 +6605,15 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
         { siteId: "ask#2", ordinal: 1, cached: true },
       ]);
     } finally {
-      store.close();
-      await rm(tempRoot, { force: true, recursive: true });
+      try {
+        await legacyFixtureDeadline(
+          Promise.all([before?.service.close(), after?.service.close()]),
+          "amend inherited-script cleanup",
+        );
+      } finally {
+        store.close();
+        await rm(tempRoot, { force: true, recursive: true });
+      }
     }
   });
 
@@ -6417,6 +6636,7 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
         sessionStore: store as never,
       });
       const runA = await submitRun(before, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         scriptText: amendScript("second question"),
         trace: traceFor("amend-attrib-predecessor"),
@@ -6431,6 +6651,7 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
       // —— 同一份脚本的修订：每一问都命中，零 turn。
       const same = makeHarness({ journal, sessionStore: store as never });
       const unchanged = await amendRun(same, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         predecessorRunId: runA,
         scriptText: amendScript("second question"),
@@ -6471,6 +6692,7 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
         sessionStore: store as never,
       });
       const revised = await amendRun(diverged, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         predecessorRunId: runA,
         scriptText: amendScript("second question, revised"),
@@ -6520,6 +6742,7 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
         sessionStore: store as never,
       });
       const runA = await submitRun(before, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         scriptText: amendScript("second question"),
         trace: traceFor("amend-predecessor"),
@@ -6535,6 +6758,7 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
         sessionStore: store as never,
       });
       const submitted = await after.service.amend!({
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         predecessorRunId: runA,
         scriptText: amendScript("second question, revised"),
@@ -6650,6 +6874,7 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
       cwd: TEST_CWD,
       scriptText: script,
       trace: traceFor(`${label}-a`),
+      parentSessionId: HARNESS_PARENT_SESSION,
     });
     // 等到第二问真的派发出去（第二轮 turn 已经起了）且第一问的边界已经写下。
     await vi.waitFor(() => {
@@ -6685,6 +6910,7 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
 
       // —— 修订：脚本逐字节相同，所以第二问的 inputHash 与在飞的那条相符。
       const amended = await amendRun(harness, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         predecessorRunId: runA,
         scriptText: script,
@@ -6749,6 +6975,7 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
       });
 
       const amended = await amendRun(harness, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         predecessorRunId: runA,
         scriptText: amendScript("second question, revised"),
@@ -6802,6 +7029,7 @@ describe("dynamic workflow run service — amend-resume 的温启动", () => {
       });
 
       const amended = await amendRun(harness, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         predecessorRunId: runA,
         // 指令逐字节相同——所以**只有**静默闸门能解释「没接上」。
@@ -7046,6 +7274,7 @@ describe("dynamic workflow run service — amend-resume 的崩溃后重建", () 
         sessionStore: store as never,
       });
       const runA = await submitRun(before, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         scriptText: TWO_ACTOR_SCRIPT,
         trace: traceFor("amend-two-actor"),
@@ -7055,6 +7284,7 @@ describe("dynamic workflow run service — amend-resume 的崩溃后重建", () 
       // 修订：只改 alpha 的问题 → alpha 在 seq 0 分歧转 live 并挂住，beta 尚未排队。
       const crashed = makeHarness({ hangActors: true, journal, sessionStore: store as never });
       const submitted = await crashed.service.amend!({
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         predecessorRunId: runA,
         scriptText: TWO_ACTOR_SCRIPT.replace("alpha question", "alpha question, revised"),
@@ -7142,6 +7372,7 @@ describe("dynamic workflow run service — amend-resume 的崩溃后重建", () 
         sessionStore: store as never,
       });
       const runA = await submitRun(before, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         scriptText: TWO_ACTOR_SCRIPT,
         trace: traceFor("amend-two-actor-write"),
@@ -7164,6 +7395,7 @@ describe("dynamic workflow run service — amend-resume 的崩溃后重建", () 
         sessionStore: store as never,
       });
       const submitted = await crashed.service.amend!({
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         predecessorRunId: runA,
         scriptText: TWO_ACTOR_SCRIPT.replace("alpha question", "alpha question, revised"),
@@ -7247,6 +7479,7 @@ describe("dynamic workflow run service — amend-resume 的崩溃后重建", () 
         sessionStore: store as never,
       });
       const runA = await submitRun(before, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         scriptText: TWO_ACTOR_SCRIPT,
         trace: traceFor("amend-lost-predecessor"),
@@ -7255,6 +7488,7 @@ describe("dynamic workflow run service — amend-resume 的崩溃后重建", () 
 
       const crashed = makeHarness({ hangActors: true, journal, sessionStore: store as never });
       const submitted = await crashed.service.amend!({
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         predecessorRunId: runA,
         scriptText: TWO_ACTOR_SCRIPT.replace("alpha question", "alpha question, revised"),
@@ -7947,6 +8181,7 @@ describe("dynamic workflow run service · 出生阶段（phaseName）", () => {
       // —— 前驱：三个 ask 与 world-read 都 live 跑一遍，边界真的落库（resume 的门槛）。
       const before = makeHarness({ journal, sessionStore: store as never });
       const runA = await submitRun(before, {
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         scriptText: BIRTH_PHASE_SCRIPT,
         trace: traceFor("birth-phase-predecessor"),
@@ -7957,6 +8192,7 @@ describe("dynamic workflow run service · 出生阶段（phaseName）", () => {
       // —— 续跑：脚本逐字节相同，于是每个节点都命中导入缓存，一次真派发都没有。
       const after = makeHarness({ journal, sessionStore: store as never });
       const submitted = await after.service.amend!({
+        parentSessionId: HARNESS_PARENT_SESSION,
         cwd: TEST_CWD,
         predecessorRunId: runA,
         scriptText: BIRTH_PHASE_SCRIPT,
@@ -8953,5 +9189,355 @@ describe("dynamic workflow run service — 留白（FillWorkflowHole）", () => 
       resolveWorkflowDefaultConcurrency(),
     ).filter((event) => event.eventType === "hole-reached" || event.eventType === "hole-filled");
     expect(replayed).toEqual(live);
+  });
+});
+
+describe("WF5 uncertain recovery service admission", () => {
+  const instance = { siteId: "world-run#1", ordinal: 1 };
+  const uncertainNode = (journal: JournalStorePort, runId: string) => {
+    journal.putNode({
+      runId,
+      ...instance,
+      kind: "world-run",
+      status: "running",
+      inputHash: "unknown",
+    });
+  };
+  const refused = (runId: string) => ({
+    ok: false,
+    reason: "recovery_uncertain",
+    uncertainty: { runId, instance },
+  });
+  const amendment = (predecessorRunId: string) => ({
+    predecessorRunId,
+    cwd: TEST_CWD,
+    scriptText: 'return "new";',
+    trace: traceFor("wf5-amend"),
+  });
+  const seed = (
+    journal: JournalStorePort,
+    runId: string,
+    status: RunStatus = "stopped",
+    parentSessionId: string = HARNESS_PARENT_SESSION,
+  ) => {
+    preloadRun(journal, {
+      runId,
+      status,
+      parentSessionId,
+      scriptText: 'return "old";',
+      ...(status === "stopped" ? { stopReason: "interrupted" as const } : {}),
+      ...(status === "completed" ? { result: "kept" } : {}),
+    });
+    uncertainNode(journal, runId);
+  };
+  async function expectReadFaces(harness: Harness, runId: string) {
+    for (const snapshot of [
+      await harness.service.getTask(runId),
+      await harness.service.waitForTask(runId),
+    ]) {
+      expect(snapshot).toMatchObject({
+        status: "failed",
+        runStatus: "errored",
+        failure: { code: "RecoveryUncertain" },
+      });
+    }
+    expect(
+      (await harness.service.listRunsForSession!()).find((run) => run.runId === runId),
+    ).toMatchObject({ status: "errored", resumable: false, failureCode: "RecoveryUncertain" });
+  }
+
+  it("WF5 rejects before authorization, repeats dedicated reason, and keeps hot/cold read faces consistent", async () => {
+    const journal = new SweepableJournalStore();
+    seed(journal, "wf5-old");
+    const prepareController = vi.fn(async () => {
+      throw new Error("authorization must not run");
+    });
+    const harness = makeHarness({ journal, prepareController });
+    const before = journal.listEvents("wf5-old", { types: "all", reportItems: "all" });
+    expect(await harness.service.resume("wf5-old")).toEqual(refused("wf5-old"));
+    expect(await harness.service.resume("wf5-old")).toEqual(refused("wf5-old"));
+    expect(await harness.service.amend!(amendment("wf5-old"))).toEqual(refused("wf5-old"));
+    expect(prepareController).not.toHaveBeenCalled();
+    expect(harness.actorRuntimeInputs).toEqual([]);
+    expect(journal.listNodes("wf5-old", { kinds: "all", withResult: true })).toEqual([
+      expect.objectContaining({ ...instance, status: "running" }),
+    ]);
+    expect(journal.listEvents("wf5-old", { types: "all", reportItems: "all" })).toEqual(before);
+    expect(harness.runEvents).toEqual([]);
+    await expectReadFaces(harness, "wf5-old");
+    await harness.service.close();
+    const cold = makeHarness({ journal, prepareController });
+    await expectReadFaces(cold, "wf5-old");
+    expect(await cold.service.resume("wf5-old")).toEqual(refused("wf5-old"));
+    await cold.service.close();
+  });
+
+  it.each(["stopped", "completed", "errored"] as const)(
+    "WF5 actual foreign %s owner rejects before reading nodes or writing facts",
+    async (status) => {
+      const journal = new SweepableJournalStore();
+      seed(journal, "wf5-foreign", status, "foreign-parent");
+      const harness = makeHarness({ journal });
+      const reads = vi.spyOn(journal, "listNodes");
+      const writes = vi.spyOn(journal, "updateRunStatus");
+      await expect(harness.service.resume("wf5-foreign")).rejects.toThrow(
+        "Workflow parent mismatch",
+      );
+      await expect(harness.service.amend!(amendment("wf5-foreign"))).rejects.toThrow(
+        "Workflow parent mismatch",
+      );
+      expect(reads).not.toHaveBeenCalled();
+      expect(writes).not.toHaveBeenCalled();
+      await harness.service.close();
+    },
+  );
+
+  it("WF5 completed predecessor retains result and terminal facts on amend refusal", async () => {
+    const journal = new SweepableJournalStore();
+    seed(journal, "wf5-completed", "completed");
+    const harness = makeHarness({ journal });
+    const before = journal.getRun("wf5-completed");
+    expect(await harness.service.amend!(amendment("wf5-completed"))).toEqual(
+      refused("wf5-completed"),
+    );
+    expect(journal.getRun("wf5-completed")).toEqual(before);
+    expect(await harness.service.listRunsForSession!()).toHaveLength(1);
+    await harness.service.close();
+  });
+
+  it.each(["resume", "amend"] as const)(
+    "WF5 %s write failure does not launch or repair terminal cache prematurely",
+    async (method) => {
+      const harness = makeHarness({ hangActors: true });
+      const runId = await submitRun(harness, {
+        cwd: TEST_CWD,
+        parentSessionId: HARNESS_PARENT_SESSION,
+        scriptText: TYPED_SCRIPT,
+        trace: traceFor("wf5-hot"),
+      });
+      try {
+        await vi.waitFor(() => expect(harness.actorRuntimeInputs.length).toBe(1));
+        await harness.service.cancel(runId);
+        await settle(harness, runId);
+        uncertainNode(harness.journal, runId);
+        const before = harness.journal.listEvents(runId, { types: "all", reportItems: "all" });
+        const calls = harness.actorRuntimeInputs.length;
+        const originalWrite = harness.journal.updateRunStatus.bind(harness.journal);
+        const write = vi
+          .spyOn(harness.journal, "updateRunStatus")
+          .mockImplementation((id, status, extra) => {
+            if (
+              id === runId &&
+              status === "errored" &&
+              extra?.failure?.code === "RecoveryUncertain"
+            )
+              throw new Error("wf5 write failed");
+            return originalWrite(id, status, extra);
+          });
+        const request = () =>
+          method === "resume"
+            ? harness.service.resume(runId)
+            : harness.service.amend!(amendment(runId));
+        await expect(request()).rejects.toThrow("wf5 write failed");
+        expect((await harness.service.getTask(runId))?.runStatus).toBe("stopped");
+        expect(harness.actorRuntimeInputs.length).toBe(calls);
+        expect(await harness.service.listRunsForSession!()).toHaveLength(1);
+        expect(harness.journal.listEvents(runId, { types: "all", reportItems: "all" })).toEqual(
+          before,
+        );
+        write.mockRestore();
+        expect(await request()).toEqual(refused(runId));
+        await expectReadFaces(harness, runId);
+        expect(harness.journal.listEvents(runId, { types: "all", reportItems: "all" })).toEqual(
+          before,
+        );
+      } finally {
+        await harness.service.close();
+      }
+    },
+  );
+
+  it("WF5 authorization await sees newly running world effect and leaves predecessor live without abort", async () => {
+    const readGate = Promise.withResolvers<void>();
+    const readEntered = Promise.withResolvers<void>();
+    const authorization = Promise.withResolvers<void>();
+    const preparing = Promise.withResolvers<void>();
+    const executing = Promise.withResolvers<void>();
+    const effect = Promise.withResolvers<Awaited<ReturnType<ExecutionPort["run"]>>>();
+    let authorizations = 0;
+    const fs = fakeFileSystemPort({});
+    const harness = makeHarness({
+      fileSystemPort: {
+        ...fs,
+        searchFiles: async (request) => {
+          readEntered.resolve();
+          await readGate.promise;
+          return fs.searchFiles(request);
+        },
+      },
+      prepareController: async () => {
+        if (++authorizations > 1) {
+          preparing.resolve();
+          await authorization.promise;
+        }
+        return undefined;
+      },
+      executionPort: {
+        run: async () => {
+          executing.resolve();
+          return effect.promise;
+        },
+      },
+    });
+    const runId = await submitRun(harness, {
+      cwd: TEST_CWD,
+      parentSessionId: HARNESS_PARENT_SESSION,
+      scriptText: 'await files.glob("*.ts"); await world.run("effect", []); return "done";',
+      trace: traceFor("wf5-race"),
+    });
+    try {
+      await readEntered.promise;
+      const pending = harness.service.amend!(amendment(runId));
+      await preparing.promise;
+      readGate.resolve();
+      await executing.promise;
+      const abort = vi.spyOn(AbortController.prototype, "abort");
+      authorization.resolve();
+      expect(await pending).toEqual({
+        ...refused(runId),
+        uncertainty: { runId, instance: { siteId: "world-read#2", ordinal: 1 } },
+      });
+      expect(abort).not.toHaveBeenCalled();
+      abort.mockRestore();
+      expect(harness.service.countLiveRuns()).toBe(1);
+      expect(harness.journal.getRun(runId)).toMatchObject({ status: "running" });
+      expect(harness.journal.getRun(runId)?.supersededBy).toBeUndefined();
+      expect(await harness.service.listRunsForSession!()).toHaveLength(1);
+      expect(await harness.service.amend!(amendment(runId))).toEqual({
+        ...refused(runId),
+        uncertainty: { runId, instance: { siteId: "world-read#2", ordinal: 1 } },
+      });
+      expect(authorizations).toBe(2);
+    } finally {
+      readGate.resolve();
+      authorization.resolve();
+      await harness.service.close();
+    }
+  });
+
+  it("WF5 resume rechecks uncertainty after authorization before registry replacement", async () => {
+    const journal = new SweepableJournalStore();
+    preloadRun(journal, {
+      runId: "wf5-resume-await",
+      parentSessionId: HARNESS_PARENT_SESSION,
+      status: "stopped",
+      stopReason: "interrupted",
+      scriptText: 'return "old";',
+    });
+    const authorization = Promise.withResolvers<void>();
+    const preparing = Promise.withResolvers<void>();
+    const harness = makeHarness({
+      journal,
+      prepareController: async () => {
+        preparing.resolve();
+        await authorization.promise;
+        return undefined;
+      },
+    });
+    try {
+      const pending = harness.service.resume("wf5-resume-await");
+      await preparing.promise;
+      uncertainNode(journal, "wf5-resume-await");
+      authorization.resolve();
+      expect(await pending).toEqual(refused("wf5-resume-await"));
+      expect(harness.actorRuntimeInputs).toEqual([]);
+      expect(harness.runEvents).toEqual([]);
+      await expectReadFaces(harness, "wf5-resume-await");
+    } finally {
+      authorization.resolve();
+      await harness.service.close();
+    }
+  });
+
+  it("WF5 safe amend final scan and abort share a synchronous turn; late read cannot dispatch effect", async () => {
+    const readGate = Promise.withResolvers<void>();
+    const readEntered = Promise.withResolvers<void>();
+    const authorization = Promise.withResolvers<void>();
+    const preparing = Promise.withResolvers<void>();
+    const fs = fakeFileSystemPort({});
+    const journal = new SweepableJournalStore();
+    const execution = vi.fn(unsupportedExecutionPort().run);
+    let authorizations = 0;
+    const harness = makeHarness({
+      journal,
+      fileSystemPort: {
+        ...fs,
+        searchFiles: async (request) => {
+          readEntered.resolve();
+          await readGate.promise;
+          return fs.searchFiles(request);
+        },
+      },
+      prepareController: async () => {
+        if (++authorizations > 1) {
+          preparing.resolve();
+          await authorization.promise;
+        }
+        return undefined;
+      },
+      executionPort: { run: execution },
+    });
+    const runId = await submitRun(harness, {
+      cwd: TEST_CWD,
+      parentSessionId: HARNESS_PARENT_SESSION,
+      scriptText: 'await files.glob("*.ts"); await world.run("effect", []); return "done";',
+      trace: traceFor("wf5-safe-amend"),
+    });
+    try {
+      await readEntered.promise;
+      const pending = harness.service.amend!(amendment(runId));
+      await preparing.promise;
+      const listNodes = journal.listNodes.bind(journal);
+      const scanTurn = Promise.withResolvers<RunRecord | undefined>();
+      const readSpy = vi.spyOn(journal, "listNodes").mockImplementation((id, options) => {
+        const nodes = listNodes(id, options);
+        if (
+          id === runId &&
+          options.kinds !== "all" &&
+          options.kinds.length === 1 &&
+          options.kinds[0] === "world-run"
+        ) {
+          // 在最后一次真实 journal 扫描安排下一微任务，验证同步 harness stop 先发生。
+          queueMicrotask(() => {
+            scanTurn.resolve(journal.getRun(runId));
+            readGate.resolve();
+          });
+        }
+        return nodes;
+      });
+      authorization.resolve();
+      const afterScanTurn = await scanTurn.promise;
+      const amended = await pending;
+      expect(afterScanTurn).toMatchObject({
+        status: "stopped",
+        stopReason: "superseded",
+        supersededBy: expect.any(String),
+      });
+      readSpy.mockRestore();
+      expect(amended).toMatchObject({ ok: true, supersededRunId: runId });
+      if (!amended.ok) throw new Error("expected safe amendment");
+      await settle(harness, amended.runId);
+      expect(journal.getRun(runId)?.supersededBy).toBe(amended.runId);
+      expect(journal.getRun(amended.runId)).toMatchObject({
+        status: "completed",
+        resumedFrom: runId,
+      });
+      expect(journal.listNodes(runId, { kinds: ["world-run"], withResult: false })).toEqual([]);
+      expect(execution).not.toHaveBeenCalled();
+    } finally {
+      readGate.resolve();
+      authorization.resolve();
+      await harness.service.close();
+    }
   });
 });

@@ -11,6 +11,7 @@ import {
   formatTaskNotification,
   formatWorkflowProviderStopError,
   formatWorkflowStallNotification,
+  formatWorkflowAskStallNotification,
   type TaskNotificationInput,
 } from "../src/runtime-task/notification.js";
 
@@ -315,5 +316,24 @@ describe("formatWorkflowStallNotification", () => {
     expect(text).toContain(
       "in 2 minutes; the provider keeps failing requests and the run is retrying with backoff.",
     );
+  });
+});
+
+describe("formatWorkflowAskStallNotification", () => {
+  it("完整身份转义并明确只观察指定 ask 的模型重试", () => {
+    const text = formatWorkflowAskStallNotification({
+      runLabel: "A&B",
+      runId: "run<1>",
+      instance: { siteId: "ask<full>", ordinal: 3 },
+      sinceMs: 1_200_000,
+      reason: "timeout&retry",
+    });
+    expect(text).toContain("<workflow-ask-stall>");
+    expect(text).toContain("run&lt;1&gt;");
+    expect(text).toContain("ask&lt;full&gt;@3");
+    expect(text).toContain("timeout&amp;retry");
+    expect(text).toContain("20 minutes");
+    expect(text).toContain("The run is still running");
+    expect(text).toContain("[SYSTEM NOTIFICATION - NOT USER INPUT]");
   });
 });
