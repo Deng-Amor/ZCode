@@ -1182,8 +1182,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createLocalServices(options: {
   /** 仅限本地 chat Agent 的专用 IPC，不注册为公共 service。 */
   createControllerPrivateChannel?: ControllerPrivateChannelFactory;
-  /** Host 注入的锁定内容窄端口；不在 services 层构造 adapters client。 */
-  confidentialControllerLockedContent?: { load(): Promise<{ version: number; digest: string; skillMd: string; files: readonly { path: string; bytes: Uint8Array }[] }> };
+  /** Host 注入的锁定内容窄端口；不在 services 层构造 adapters client。
+   * 2026-10-24 勘误：运行时契约自 C23R2 起为 skillMd 单字段（locked-content 通道只回 SKILL.md 正文，
+   * references 文件级按需读取属 OQ-8 未完项）；原类型误带 files 字段，与 0.0.9 已发布实现不符。 */
+  confidentialControllerLockedContent?: { load(): Promise<{ version: number; digest: string; skillMd: string }> };
   /** 已鉴权 Desktop stdio 连接提供的私有回查频道；不作为公共 service 暴露。 */
   topicResourceRelayChannel?: (request: unknown) => IChannel;
   parentPort?: Parameters<typeof createBroadcastService>[0];

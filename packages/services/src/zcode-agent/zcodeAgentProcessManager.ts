@@ -72,7 +72,9 @@ export type ZCodeAgentCommandResolver = (
 
 export interface ZCodeAgentProcessManagerOptions {
   createControllerPrivateChannel?: ControllerPrivateChannelFactory;
-  confidentialControllerLockedContent?: { load(): Promise<{ version: number; digest: string; skillMd: string; files: readonly { path: string; bytes: Uint8Array }[] }> };
+  // 2026-10-24 勘误：运行时契约自 C23R2 起为 skillMd 单字段（locked-content 通道只回 SKILL.md 正文，
+  // references 文件级按需读取属 OQ-8 未完项）；原类型误带 files，与 0.0.9 已发布实现不符。
+  confidentialControllerLockedContent?: { load(): Promise<{ version: number; digest: string; skillMd: string }> };
   commandResolver?: ZCodeAgentCommandResolver;
   presentationSurface?: ZCodeAgentPresentationSurface;
   requestTimeoutMs?: number;
