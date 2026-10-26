@@ -45,6 +45,21 @@ export type {
   LongPollTransportOptions,
 } from "./long-poll-transport.js";
 export {
+  canonicalJsonString,
+  commandChannelSignatureInput,
+  verifyCommandChannelEnvelopeSignature,
+} from "./canonical-json.js";
+export {
+  DEFAULT_COMMAND_CHANNEL_RECEIPT_PATH,
+  createCommandChannelReceiptUploader,
+} from "./http-receipts.js";
+export type {
+  CommandChannelReceiptUploader,
+  CommandChannelReceiptUploaderOptions,
+  CommandChannelReceiptUploadOutcome,
+  CommandChannelReceiptTokenProvider,
+} from "./http-receipts.js";
+export {
   ExecutorScopeError,
   createPullRunLogsExecutor,
   createPullSkillUsageStatsExecutor,

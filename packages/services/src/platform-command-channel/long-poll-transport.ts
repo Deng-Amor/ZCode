@@ -6,6 +6,16 @@ export interface LongPollTransportOptions {
   readonly cursorParam?: string;
   readonly fetchImpl?: typeof fetch;
   readonly processEnvelope?: CommandChannelProcessor["processEnvelope"] | ((envelope: unknown) => Promise<unknown>);
+  /**
+   * 每轮成功拉取后的回调（游标持久化挂点，2026-10-25 与中台对齐）。
+   * 在 nextCursor 推进之后调用；不得抛错（轮询循环对回调异常按传输失败退避）。
+   */
+  readonly onPollSuccess?: (cursor: string | undefined) => void | Promise<void>;
+  /**
+   * 本轮处理产生的回执（processEnvelope 返回值数组，仅非空时调用）。
+   * 回调自行管理重试缓冲，不得抛错阻断轮询（2026-10-25 与中台对齐）。
+   */
+  readonly onReceipts?: (receipts: readonly unknown[]) => void | Promise<void>;
   readonly now?: () => Date;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly backoff?: { readonly initialMs?: number; readonly multiplier?: number; readonly maxMs?: number };
@@ -46,8 +56,15 @@ export function createLongPollTransport(options: LongPollTransportOptions): Long
         let payload: PollPayload;
         try { payload = (await response.json()) as PollPayload; } catch { throw new CommandChannelTransportError("TRANSPORT_MALFORMED_RESPONSE", "long poll response is not JSON"); }
         if (!payload || typeof payload !== "object" || (payload.nextCursor !== undefined && typeof payload.nextCursor !== "string")) throw new CommandChannelTransportError("TRANSPORT_MALFORMED_RESPONSE", "long poll response has invalid shape");
-        for (const envelope of payload.envelopes ?? (payload.envelope === undefined ? [] : [payload.envelope])) await options.processEnvelope?.(envelope);
+        const receipts: unknown[] = [];
+        for (const envelope of payload.envelopes ?? (payload.envelope === undefined ? [] : [payload.envelope])) {
+          const result = await options.processEnvelope?.(envelope);
+          if (result !== undefined && result !== null) receipts.push(result);
+        }
         if (payload.nextCursor !== undefined) currentCursor = payload.nextCursor;
+        // 先游标后回执：游标推进成功才算本轮成立；回调抛错按传输失败退避重试本轮。
+        await options.onPollSuccess?.(currentCursor);
+        if (receipts.length > 0) await options.onReceipts?.(receipts);
         delay = backoff.initialMs;
       } catch (error) {
         if (stopped) break;

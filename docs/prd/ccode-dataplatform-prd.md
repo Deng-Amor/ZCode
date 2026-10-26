@@ -131,7 +131,7 @@
     2. 对上述两个指纹逐一出具判定：有效 / 历史已轮换（给出轮换记录）/ 无效（如开发临时密钥，对齐 `E:\ZCode\docs\specs\ccode-confidential-controller.md` L165「开发临时密钥不能冒充生产信任根」）；
     3. 据判定结论由客户端仓库修正代码内置公钥或文档记录（属客户端侧任务，不在本文范围）；
     4. 判定出具前，**不得执行信任根轮换，也不得依赖任一未确认指纹进行新的签名发布**。
-- M6-R6 权限映射（实施 provenance-ledger 门禁时适用）：submit/get 使用 `system:ccode-controller:use`；accept/reject 使用 `biz:knowledge-base:review:approve` / `biz:knowledge-base:review:reject`；close/publish 使用 `system:ccode-controller:publish`（`E:\ZCode\docs\specs\ccode-provenance-ledger.md` L28）；与中台实际权限模型的核对待中台确认。
+- M6-R6 权限映射（实施 provenance-ledger 门禁时适用）：close/publish 使用 `system:ccode-controller:publish`；accept/reject 使用 `biz:knowledge-base:review:approve` / `biz:knowledge-base:review:reject`。〔2026-10-24 修订：原 submit/get 映射的 `system:ccode-controller:use` 已随「总控读=全员」拍板退役（见 §4.6 读权限口径），provenance-ledger 的 submit/get 权限映射待该模块落地时重新拍板——get 属读操作倾向随读开放（登录即可），submit 属回流写入可考虑复用 publish 或独立权限。〕与中台实际权限模型的核对待中台确认。
 - M6-R7 密钥与传输：签名私钥由服务端 KMS 或等价受保护存储托管（`E:\ZCode\docs\specs\ccode-confidential-controller.md` L163-L165）；全链路 HTTPS；skill 内容响应 `no-store`；凭据、正文不进任何中台日志。
 
 ### 3.7 模块⑦：服务端指令与订阅通道（2026-10-22 新需求，v0.2 新增）
@@ -227,6 +227,7 @@ sequenceDiagram
 ### 4.6 既有接口基线（客户端已接线现状，演进起点）
 
 - 端点：`POST system/ccode-controller/authorize`、`POST system/ccode-controller/content`（Bearer token + tenant-id 头，响应强制 `no-store`、限制响应体积）——`E:\ZCode\docs\prd\split\05-controller-expert.md` 盘点 1（源指针 `packages\services\src\confidential-controller\http-source.ts` L107-L142）。
+- 读权限口径（2026-10-24 拍板）：authorize/content 对**全部登录用户**开放——总控 skill 人人可读，不再按 `system:ccode-controller:use` 鉴权（该权限标识就此退役）；登录与租户校验保留。写入类接口（seal/publish/revoke）继续要求 `system:ccode-controller:publish`。背景：0.0.8 上线时生产未注册 `use` 权限，非超管用户被锁死在客户端启动登录页（严格模式下权限无菜单=全员拒绝），先以注册菜单+角色绑定止血，随后服务端去除读接口权限门为根治。
 - 信任配置：skillId=`controller`、name=总控派单、minimumVersion=1、桌面 Main 内置 Ed25519 公钥——同文档盘点 3（源指针 `packages\desktop\src\main\index.ts` L682-L691）。
 - 中台发布状态：spec 声明「2026-10-21 中台服务及总控 v1 已发布；客户端完整运行与新安装包尚未验收」（`E:\ZCode\docs\specs\ccode-confidential-controller.md` L7-L8）——**待中台确认当前生产状态**。
 - 演进兼容要求：新增通告/下发/遥测/回流端点不得破坏既有 authorize/content 行为（或提供带通告的迁移窗口）；命名与鉴权体系保持一致。
@@ -245,6 +246,14 @@ sequenceDiagram
 | signature | 服务端签名（信任根体系见 M6-R4；通道层证书与应用层签名的分工由中台定） |
 
 客户端响应：`executed`（附结果摘要或数据引用，数据本体经独立上传回传）或 `rejected`（固定原因码：`POLICY_DISABLED` / `SCOPE_INVALID` / `EXPIRED` / `UNKNOWN_TYPE`）；响应与执行双向留审计（M7-R4）。
+
+**〔2026-10-25 与中台对齐定稿〕M7 签名与回执合同**：
+
+- **签名输入**：信封**移除 `signature` 字段后**按 RFC 8785（JCS）规范化的 JSON 的 UTF-8 字节；算法 Ed25519（信任根体系 M6-R4，与总控同一信任根）；`signature` 取值为签名结果的 base64。客户端 0.0.9 曾实现为「含 signature 的 JSON.stringify」自引用形态（不可签，且链路未真实运行过），已按本口径修复（下一版随发）。
+- **通道端点**：长轮询 `GET system/ccode-commands/poll?cursor=<不透明游标>`；响应 `{envelopes?:[] | envelope?:{}, nextCursor?:string}`。
+- **回执上行**：`POST system/ccode-commands/receipts`，认证复用 M6-R1（Bearer + tenant-id 头）；请求体 `{"schemaVersion":1,"receipts":[<CommandChannelResponse 对象>...]}`；响应业务 `code=0` 即整批受理（客户端清空待发缓冲），非 0/HTTP 失败客户端保留重发，按 commandId/noticeId 幂等。客户端本地对同 commandId 重放返回字节一致结果（磁盘冻结）。
+- **游标持久化**：客户端将 `nextCursor` 落本地存储目录跨重启续用；游标损坏时从最新重新拉取（可能重复下发，靠信封幂等键消化）。
+- 诊断 bundle 本轮只验收**引用事件**；附件文件上传端点（OQ-A3）仍开放。
 
 ## 五、非功能要求
 

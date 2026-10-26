@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import { generateKeyPairSync, sign as ed25519Sign } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { canonicalJsonString } from "@zcode/services/platform-command-channel";
 import { createDesktopCcodePlatformRuntimeWiring } from "../src/main/ccode-platform-runtime-wiring/index.js";
+import { testPullRunLogsEnvelope } from "../../services/test/platformCommandChannelFixtures.js";
 
 function setup() {
   let authenticated = false;
@@ -142,5 +148,126 @@ describe("desktop CCode platform runtime wiring", () => {
     await wiring.dispose();
     expect(warn).toHaveBeenCalled();
     expect(builder.build).toHaveBeenCalledTimes(2);
+  });
+
+  it("wires the JCS signature contract: aligned signature passes, 0.0.9 self-referential form rejected", async () => {
+    // 2026-10-25 与中台对齐：验签输入=移除 signature 后的 JCS 规范化字节。
+    // 回归锚点：0.0.9 的「含 signature JSON.stringify」形态必须 INVALID_SIGNATURE。
+    const storageRoot = await mkdtemp(join(tmpdir(), "ccode-wiring-signature-"));
+    try {
+      const pair = generateKeyPairSync("ed25519");
+      const publicKeyPem = pair.publicKey.export({ type: "spki", format: "pem" }).toString();
+      const privateKeyPem = pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+      const s = setup();
+      s.account.getState.mockImplementation(async () => ({ authenticated: true, tenantId: "7", userId: "9" }));
+      let capturedDeps: Parameters<NonNullable<DesktopCcodePlatformRuntimeWiringOptions["createRuntime"]>>[0] | undefined;
+      const wiring = createDesktopCcodePlatformRuntimeWiring({
+        account: s.account, storageDirectory: storageRoot, apiBaseUrl: "https://example.test/",
+        commandSignerPublicKeyPem: publicKeyPem, homeDirectory: "home", workingDirectory: "work",
+        createRuntime: (deps) => { capturedDeps = deps; return s.runtime as never; },
+        createTransport: () => s.transport,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const processor = capturedDeps!.createCommandChannel() as { processEnvelope(envelope: unknown): Promise<{ response: { status: string; reason?: string } }> };
+
+      const aligned = { ...testPullRunLogsEnvelope() } as Record<string, unknown>;
+      aligned.signature = "placeholder";
+      const { signature: _omit, ...rest } = aligned;
+      void _omit;
+      aligned.signature = ed25519Sign(null, Buffer.from(canonicalJsonString(rest), "utf8"), privateKeyPem).toString("base64");
+      const alignedResult = await processor.processEnvelope(aligned);
+      expect(alignedResult.response.reason).not.toBe("INVALID_SIGNATURE");
+      // 夹具时间是 2026-10-22（已过期），验签通过后应走 EXPIRED 拒绝——即证明签名被接受。
+      expect(alignedResult.response.reason).toBe("EXPIRED");
+
+      const selfReferential = { ...testPullRunLogsEnvelope(), signature: "placeholder" } as Record<string, unknown>;
+      selfReferential.signature = ed25519Sign(null, Buffer.from(JSON.stringify(selfReferential), "utf8"), privateKeyPem).toString("base64");
+      const legacyResult = await processor.processEnvelope(selfReferential);
+      expect(legacyResult.response.reason).toBe("INVALID_SIGNATURE");
+      await wiring.dispose();
+    } finally {
+      await rm(storageRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("uploads receipts and persists the poll cursor across rebuilds", async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), "ccode-wiring-receipts-"));
+    try {
+      const pollUrls: string[] = [];
+      const receiptPosts: { url: string; body: unknown }[] = [];
+      let pollCount = 0;
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/poll")) {
+          pollUrls.push(url);
+          pollCount += 1;
+          // 首轮回传一个信封（触发回执），后续空轮（维持游标）；10ms 延迟避免热循环。
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          const payload = pollCount === 1
+            ? { envelopes: [{ envelopeVersion: 1 }], nextCursor: "cursor-1" }
+            : { envelopes: [], nextCursor: "cursor-1" };
+          return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        receiptPosts.push({ url, body: JSON.parse(String(init?.body)) });
+        return new Response(JSON.stringify({ code: 0 }), { status: 200, headers: { "content-type": "application/json" } });
+      });
+      const account = {
+        getState: vi.fn(async () => ({ authenticated: true, tenantId: "7", userId: "9" })),
+        onStateChanged: () => () => undefined,
+        getAuthHeaders: vi.fn(async () => ({ authorization: "Bearer t", "tenant-id": "7" })),
+      };
+      let runtimeDeps: { startTransport(): Promise<void>; stopTransport(): Promise<void> } | undefined;
+      const runtime = {
+        start: vi.fn(async () => { await runtimeDeps?.startTransport(); }),
+        stop: vi.fn(async () => { await runtimeDeps?.stopTransport(); }),
+        dispose: vi.fn(async () => undefined),
+        processCommand: vi.fn(async () => ({
+          response: { status: "executed", commandId: "cmd-1", resultRef: "ref-1" },
+          serializedResponse: '{"status":"executed","commandId":"cmd-1","resultRef":"ref-1"}',
+          replay: false,
+        })),
+      };
+      const wiring = createDesktopCcodePlatformRuntimeWiring({
+        account, storageDirectory: storageRoot, apiBaseUrl: "https://example.test/admin-api/",
+        commandSignerPublicKeyPem: "key", homeDirectory: "home", workingDirectory: "work",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        createRuntime: (deps) => { runtimeDeps = deps as typeof runtimeDeps; return runtime as never; },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      await wiring.dispose();
+      // 回执上行：POST receipts，体含固定键序响应对象。
+      expect(receiptPosts.length).toBeGreaterThanOrEqual(1);
+      expect(receiptPosts[0]!.url).toBe("https://example.test/admin-api/system/ccode-commands/receipts");
+      expect(receiptPosts[0]!.body).toEqual({
+        schemaVersion: 1,
+        receipts: [{ status: "executed", commandId: "cmd-1", resultRef: "ref-1" }],
+      });
+      // 游标持久化：落盘后跨 wiring 重建作为初始 cursor 回传。
+      await expect(readFile(join(storageRoot, "command-channel", "cursor.txt"), "utf8")).resolves.toBe("cursor-1");
+      const secondPollUrls: string[] = [];
+      const fetch2 = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/poll")) {
+          secondPollUrls.push(url);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return new Response(JSON.stringify({ envelopes: [], nextCursor: "cursor-1" }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ code: 0 }), { status: 200, headers: { "content-type": "application/json" } });
+      });
+      let deps2: { startTransport(): Promise<void>; stopTransport(): Promise<void> } | undefined;
+      const wiring2 = createDesktopCcodePlatformRuntimeWiring({
+        account, storageDirectory: storageRoot, apiBaseUrl: "https://example.test/admin-api/",
+        commandSignerPublicKeyPem: "key", homeDirectory: "home", workingDirectory: "work",
+        fetchImpl: fetch2 as unknown as typeof fetch,
+        createRuntime: (deps) => { deps2 = deps as typeof deps2; return { ...runtime, start: vi.fn(async () => { await deps2?.startTransport(); }), stop: vi.fn(async () => { await deps2?.stopTransport(); }) } as never; },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await wiring2.dispose();
+      expect(secondPollUrls.length).toBeGreaterThanOrEqual(1);
+      expect(secondPollUrls[0]!).toContain("cursor=cursor-1");
+      expect(pollUrls[0]!).not.toContain("cursor=");
+    } finally {
+      await rm(storageRoot, { recursive: true, force: true });
+    }
   });
 });

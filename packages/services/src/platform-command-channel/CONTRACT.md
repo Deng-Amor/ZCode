@@ -10,3 +10,10 @@ CCode 客户端**服务端指令/订阅通道基础层**（中台 PRD v0.2.1 §3
 - **端口**（contract.ts，全部注入）：`CommandChannelSignatureVerifier`（输入基础信封形态）、`CommandChannelExecutor`（返回 resultRef，抛错=非终态不冻结）、`CommandChannelNoticeSink`、`CommandChannelAuditSink`（执行/拒绝/分发终态留痕；sink 抛错降级 warn 不阻断）、`CommandChannelCommandStore`。
 - **审计事件族**：envelope.rejected（MALFORMED/UNKNOWN_TYPE：家族不可知）、command.executed / command.rejected、notice.dispatched / notice.rejected。
 - 常数待中台对齐：maxTimeRangeMs（默认 7 天）、maxSessionIdLength（默认 256）。
+
+## 签名与回执（2026-10-25 与中台对齐定稿）
+
+- **签名输入**（canonical-json.ts）：基础信封移除 `signature` 后的 RFC 8785/JCS 规范化 JSON UTF-8 字节；Ed25519；signature=base64。值域安全子集：字符串/整数/对象/数组；浮点与非安全整数直接抛错（信封 schema 域不含浮点）。
+- **回执上行**（http-receipts.ts）：`POST system/ccode-commands/receipts`，体 `{"schemaVersion":1,"receipts":[<响应对象>]}`；Bearer+tenant-id；`code=0` 整批受理，401/403→auth-required，429→rate-limited，其余→retryable（调用方保留重发，按幂等键消化重复）。
+- **长轮询**（long-poll-transport.ts）：`GET system/ccode-commands/poll?cursor=`；每轮成功后回调 `onPollSuccess(cursor)`（游标持久化挂点）与 `onReceipts(results)`（仅非空时；回调自行管理重试，不得抛错阻断轮询）。
+

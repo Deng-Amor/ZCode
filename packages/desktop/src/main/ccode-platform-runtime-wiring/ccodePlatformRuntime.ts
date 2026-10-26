@@ -1,4 +1,4 @@
-import { createPublicKey, verify } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   createCcodePlatformRuntime,
@@ -8,7 +8,7 @@ import {
 import { createAuditTelemetryDiskQueue, createAuditTelemetryHttpUploader, createAuditTelemetryPolicyGate, createAuditTelemetryUploadScheduler, createDiagnosticBundleTrigger, DEFAULT_AUDIT_TELEMETRY_POLICY } from "@zcode/services/audit-telemetry";
 import { createExpertSkillCacheStore } from "@zcode/services/expert-skills";
 import { createSkillReflowHttpUploader, createSkillReflowLedgerFile, createSkillReflowQueueFile, createSkillReflowRootsProvider, createSkillReflowUploadDriver, createSkillReflowUploadService, type SkillReflowPlatform } from "@zcode/services/skill-reflow-upload";
-import { createCommandChannelDiskStore, createCommandChannelProcessor, createLongPollTransport, createNotCollectedSource, createPullChatLogsExecutor, createPullRunLogsExecutor, createPullSkillUsageStatsExecutor, createRunLogsSource, DEFAULT_COMMAND_CHANNEL_POLICY } from "@zcode/services/platform-command-channel";
+import { createCommandChannelDiskStore, createCommandChannelProcessor, createCommandChannelReceiptUploader, createLongPollTransport, createNotCollectedSource, createPullChatLogsExecutor, createPullRunLogsExecutor, createPullSkillUsageStatsExecutor, createRunLogsSource, verifyCommandChannelEnvelopeSignature, DEFAULT_COMMAND_CHANNEL_POLICY } from "@zcode/services/platform-command-channel";
 import type { DesktopCcodePlatformRuntimeWiring, DesktopCcodePlatformRuntimeWiringOptions } from "./contract.js";
 
 export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePlatformRuntimeWiringOptions): DesktopCcodePlatformRuntimeWiring {
@@ -74,7 +74,7 @@ export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePla
         driver = createSkillReflowUploadDriver({ service, queue, uploader });
         return service;
       },
-      createCommandChannel: () => createCommandChannelProcessor({ verifier: { verify: async (envelope) => { try { const key = createPublicKey(options.commandSignerPublicKeyPem); return verify(null, Buffer.from(JSON.stringify(envelope)), key, Buffer.from(envelope.signature, "base64")); } catch { return false; } } }, executor: { execute: async (command) => {
+      createCommandChannel: () => createCommandChannelProcessor({ verifier: { verify: async (envelope) => verifyCommandChannelEnvelopeSignature(envelope, options.commandSignerPublicKeyPem) }, executor: { execute: async (command) => {
   // run-logs 源给近 31 天宽窗口+大分页；执行体按指令 scope 再过滤（executors.ts 为唯一范围判定，窗口上限 31 天）。
   // chat-logs / skill-usage 如实 NOT_COLLECTED（OQ-12 门控未开/统计存储未落地，stub-sources.ts 注释为凭）。
   if (command.type === "command.pull_run_logs") {
@@ -88,7 +88,62 @@ export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePla
     };
     runtime = options.createRuntime?.(deps) ?? createCcodePlatformRuntime({ storageDirectory: options.storageDirectory }, deps);
     const processEnvelope = (envelope: unknown) => runtime!.processCommand(envelope);
-    const raw = createLongPollTransport({ endpoint: new URL("system/ccode-commands/poll", options.apiBaseUrl).toString(), fetchImpl: authFetch, processEnvelope });
+    // 回执上行（2026-10-25 与中台对齐）：缓冲 + 逐批 POST system/ccode-commands/receipts；
+    // 失败保留重发（按 commandId/noticeId 幂等，中台侧消化重复），缓冲封顶丢最旧防无界增长。
+    const cursorDir = join(options.storageDirectory, "command-channel");
+    const cursorFile = join(cursorDir, "cursor.txt");
+    const priorCursor = await readFile(cursorFile, "utf8").then((text) => {
+      const trimmed = text.trim();
+      return trimmed.length > 0 && trimmed.length <= 4096 ? trimmed : undefined;
+    }).catch(() => undefined);
+    const receiptUploader = createCommandChannelReceiptUploader({ baseUrl: options.apiBaseUrl, tokenProvider, fetchImpl: authFetch });
+    const pendingReceipts: string[] = [];
+    const maxPendingReceipts = 1000;
+    let flushingReceipts = false;
+    const flushReceipts = async () => {
+      if (flushingReceipts) return;
+      flushingReceipts = true;
+      try {
+        while (pendingReceipts.length > 0) {
+          const batch = pendingReceipts.slice(0, 100);
+          const outcome = await receiptUploader.upload(batch);
+          if (outcome === "accepted") pendingReceipts.splice(0, batch.length);
+          else break; // auth-required / rate-limited / retryable：保留缓冲，下轮 poll 后再试。
+        }
+      } catch (error) {
+        warn("CCode command channel receipt flush failed", error);
+      } finally {
+        flushingReceipts = false;
+      }
+    };
+    const raw = createLongPollTransport({
+      endpoint: new URL("system/ccode-commands/poll", options.apiBaseUrl).toString(),
+      fetchImpl: authFetch,
+      processEnvelope,
+      cursor: priorCursor,
+      onPollSuccess: async (cursor) => {
+        // 游标持久化：写失败不阻断轮询（最坏重复下发，靠信封幂等键消化）；异步落盘。
+        if (cursor === undefined) return;
+        try {
+          await mkdir(cursorDir, { recursive: true });
+          await writeFile(cursorFile, cursor, "utf8");
+        } catch (error) {
+          warn("CCode command channel cursor persist failed", error);
+        }
+      },
+      onReceipts: (receipts) => {
+        for (const receipt of receipts) {
+          const serialized = (receipt as { serializedResponse?: unknown } | null | undefined)?.serializedResponse;
+          if (typeof serialized !== "string") continue;
+          if (pendingReceipts.length >= maxPendingReceipts) {
+            pendingReceipts.shift();
+            warn("CCode command channel receipt buffer overflow; dropped oldest", undefined);
+          }
+          pendingReceipts.push(serialized);
+        }
+        void flushReceipts();
+      },
+    });
     transport = options.createTransport?.(raw) ?? raw;
     return runtime;
   };
