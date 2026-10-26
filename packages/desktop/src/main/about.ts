@@ -19,6 +19,7 @@ import { createCustomAboutDialogHtml } from "./aboutWindow.js";
 
 interface DesktopBuildMetadata {
   appVersion?: string;
+  productVersion?: string;
   buildCommitId?: string;
   buildTime?: string;
   electronBuilderVersion?: string;

@@ -4024,6 +4024,10 @@ parentPort.on("message", async (e: Electron.MessageEvent) => {
               zcodeBuiltinProviderConfigFilePath: msg.zcodeBuiltinProviderConfigFilePath,
               processLifecycleReporter: runtimeProcessLifecycleReporter,
               taskRuntimeReporter: runtimeTaskReporter,
+              reportAuditTaskEvent: (event) => {
+                try { parentPort?.postMessage({ type: HostResponseTypes.AuditTaskEvent, ...event }); }
+                catch { /* Main 退出后遥测不得影响任务。 */ }
+              },
               feedback: {
                 getDeviceMid: () => msg.deviceMid,
                 apiBaseUrl: msg.feedbackApiBase,

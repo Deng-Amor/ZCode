@@ -68,6 +68,23 @@ function timers(): { timers: AuditTelemetrySchedulerTimers; advance: (ms: number
 }
 
 describe("audit telemetry upload scheduler", () => {
+  it("keeps polling after an accepted batch and an empty window", async () => {
+    const clock = timers();
+    const h = harness([record("lifecycle", "first")], []);
+    const scheduler = createAuditTelemetryUploadScheduler({ queue: h.queue, uploader: h.uploader, timers: clock.timers, lifecycleIntervalMs: 100, diagnosticIntervalMs: 1000 });
+    scheduler.start();
+    await scheduler.notifyOnline();
+    expect(scheduler.state().nextLifecycleFlushAt).toBe(100);
+    clock.advance(100);
+    await scheduler.notifyOnline();
+    expect(scheduler.state().nextLifecycleFlushAt).toBe(200);
+    h.pending.push(record("lifecycle", "second"));
+    clock.advance(100);
+    await scheduler.notifyOnline();
+    expect(h.uploads.map((item) => item.ids)).toEqual([["first"], ["second"]]);
+    await scheduler.dispose();
+  });
+
   it("flushes lifecycle on batch size and diagnostic on its window", async () => {
     const clock = timers();
     const h = harness([record("lifecycle", "l1"), record("diagnostic", "d1")], []);

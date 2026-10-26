@@ -236,6 +236,8 @@ sequenceDiagram
 
 ## 八、验收场景（客户端侧判据，均可回读；服务端侧对应 PRD S7/S9/S10）
 
+普通任务最小接线（2026-10-26）：Agent 服务在 live 事件去重后、UI 订阅广播前，只提取 `turn.started` 与非 compact 的 `turn.completed`/`turn.failed` 中的任务 ID、turn ID、结果，经受限 Host→Main 消息交给 Main 采集器；因此零个或多个 UI 订阅都只铸造一次。Main 在开始事件捕获已验签锁定总控的 `skillVersion`/`skillDigest`，终态只使用该 turn 的捕获值；开始事件或锁定副本缺失时不猜测归因、不上报。`ccodeRelease` 来自产品构建元数据。`instanceId` 复用本地持久 `deviceMid` UUID，仅供统计分组，属于未验证设备标识，不作设备注册或身份凭证。队列按租户与用户隔离，身份切换时旧运行时先退出，旧队列只能用原账号凭据发送；Main 是队列和周期上传的唯一所有者，成功冲刷后继续排定下一窗口。
+
 1. **AT-1 白名单剔除凭据样本**（拍板 #1；对应 PRD M4-R8）：构造含 API key 形 token（如 `sk-` 前缀高熵串）的 `ErrorPayload.message` 样本驱动一次运行错误。判定：出网请求体（本地队列 dump 或测试代理抓包）序列化文本对该 token 全文检索零命中；事件仅含 errorCode 与 sanitizedSummary，且 sanitizedSummary 中该 token 被打码/剔除。
 2. **AT-2 断网补传幂等**（拍板 #3；对应 PRD S7 客户端侧）：断网期间产生 10 条 lifecycle 事件并本地排队，恢复后按入队序补传，随后人为重放同一批次（同 commandId 同字节）。判定：中台事件流表该批恰好 10 行（去重生效）；客户端队列出队数与受理数一致，无第二条重试队列。
 3. **AT-3 负面清单全文检索**（§5.1.6）：同一会话内产生含对话正文、工具 result content、已加载 skill 正文的样本。判定：该会话全部出网 payload 对上述正文片段（各取 ≥32 字节特征串）全文检索零命中。

@@ -135,6 +135,28 @@ process.stdin.on("data", (chunk) => {
 });
 `;
 
+const AUDIT_TURN_FAKE_AGENT = `
+let buf = "";
+function send(value) { process.stdout.write(JSON.stringify(value) + "\\n"); }
+process.stdin.on("data", (chunk) => {
+  buf += chunk.toString("utf8");
+  let index;
+  while ((index = buf.indexOf("\\n")) >= 0) {
+    const line = buf.slice(0, index); buf = buf.slice(index + 1);
+    let msg; try { msg = JSON.parse(line); } catch { continue; }
+    if (msg.method === "session/subscribe") { send({ id: msg.id, result: { sessionId: msg.params.sessionId, eventSeq: 0, events: [] } }); continue; }
+    if (msg.method !== "session/events") continue;
+    const sessionId = msg.params.sessionId;
+    const common = { sessionId, turnId: "turn-1", timestamp: Date.now() };
+    const started = { ...common, eventId: "audit-start", seq: 1, type: "turn.started", payload: { turnNumber: 1, input: "private input" } };
+    const compact = { ...common, eventId: "audit-compact", seq: 2, type: "turn.failed", payload: { error: { type: "error", message: "private compact error" }, turnPhase: "compact" } };
+    const completed = { ...common, eventId: "audit-finish", seq: 3, type: "turn.completed", payload: { response: "private response", tokenCount: 1, toolCallCount: 0, duration: 1, resultType: "success" } };
+    for (const event of [started, compact, completed, completed]) send({ method: "session/event", params: event });
+    send({ id: msg.id, result: { events: [] } });
+  }
+});
+`;
+
 const CUA_OPERATION_LIVE_EVENT_FAKE_AGENT = `
 let buf = "";
 function send(obj) { process.stdout.write(JSON.stringify(obj) + "\\n"); }
@@ -2428,6 +2450,27 @@ describe("createZCodeAgentService", () => {
     firstSubscription.dispose();
     secondSubscription.dispose();
     await service.disposeAllAndWait();
+  });
+
+  it.each([0, 2])("reports one audited turn with %i UI subscriptions and ignores compact failure", async (subscriberCount) => {
+    const workspacePath = mkdtempSync(join(tmpdir(), "zcode-audit-turn-"));
+    createdDirs.push(workspacePath);
+    const scriptPath = join(workspacePath, "audit-agent.cjs");
+    writeFileSync(scriptPath, AUDIT_TURN_FAKE_AGENT);
+    const reportAuditTaskEvent = vi.fn();
+    const service = createReadyZCodeAgentService({ commandResolver: () => ({ command: process.execPath, args: [scriptPath] }), reportAuditTaskEvent });
+    const subscriptions = Array.from({ length: subscriberCount }, () => service.onDynamicSessionEvent({ workspacePath, sessionId: "sess-1", deliveryKind: "desktop-continuous", includeSnapshot: false })(() => undefined));
+    try {
+      await service.readSessionEvents({ workspacePath, sessionId: "sess-1" });
+      await vi.waitFor(() => expect(reportAuditTaskEvent).toHaveBeenCalledTimes(2));
+      expect(reportAuditTaskEvent.mock.calls.map(([event]) => event)).toEqual([
+        { taskId: "sess-1", turnId: "turn-1", phase: "started" },
+        { taskId: "sess-1", turnId: "turn-1", phase: "finished", result: "success" },
+      ]);
+    } finally {
+      subscriptions.forEach((subscription) => subscription.dispose());
+      await service.disposeAllAndWait();
+    }
   });
 
   it("reports only validated de-duplicated CUA sideband events without legacy session delivery", async () => {

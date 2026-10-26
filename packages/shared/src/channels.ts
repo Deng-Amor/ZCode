@@ -710,6 +710,7 @@ export const HostResponseTypes = {
   ToolExecResource: "tool-exec-resource",
   /** 自动化 Host 首次输入 accepted 后报告新建 Session。 */
   SessionCreateTelemetry: "session-create-telemetry",
+  AuditTaskEvent: "audit-task-event",
   PluginTelemetry: "plugin-telemetry",
   /** host → main：资源管理器采样结果（按 requestId 关联） */
   ResourceUsageSnapshotResult: "resource-usage-snapshot-result",

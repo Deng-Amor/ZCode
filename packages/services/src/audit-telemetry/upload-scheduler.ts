@@ -104,7 +104,11 @@ export function createAuditTelemetryUploadScheduler(
           ? Math.min(sendBatchSize[channel], lifecycleBatchSize)
           : sendBatchSize[channel];
         records = await options.queue.take(limit, channel);
-        if (records.length === 0) return;
+        // 成功或空队列也必须重排周期窗口；旧实现首次 flush 后就不再定时上传。
+        if (records.length === 0) {
+          schedule(channel, channel === "lifecycle" ? lifecycleIntervalMs : diagnosticIntervalMs);
+          return;
+        }
         flushes += 1;
         let outcome: AuditTelemetryUploadOutcome;
         try {
@@ -116,12 +120,14 @@ export function createAuditTelemetryUploadScheduler(
           await options.queue.ack(outcome.acknowledgedCommandIds);
           retryAttempts[channel] = 0;
           sendBatchSize[channel] = baseBatchSize;
+          schedule(channel, channel === "lifecycle" ? lifecycleIntervalMs : diagnosticIntervalMs);
           return;
         }
         if (outcome.kind === "rejected") {
           deadLettered += outcome.reasons.length;
           await options.queue.ack(outcome.reasons.map((item) => item.commandId));
           retryAttempts[channel] = 0;
+          schedule(channel, channel === "lifecycle" ? lifecycleIntervalMs : diagnosticIntervalMs);
           return;
         }
         if (outcome.kind === "auth-required") {
@@ -181,6 +187,8 @@ export function createAuditTelemetryUploadScheduler(
         disposed = false;
         await flushBoth();
         disposed = true;
+        clearTimer("lifecycle");
+        clearTimer("diagnostic");
       }
       await options.queue.dispose();
     },

@@ -1224,6 +1224,7 @@ export function createLocalServices(options: {
   ) => void | Promise<void>;
   processLifecycleReporter?: RuntimeProcessLifecycleReporter;
   taskRuntimeReporter?: RuntimeTaskReporter;
+  reportAuditTaskEvent?: (event: { taskId: string; turnId: string; phase: "started" | "finished"; result?: string }) => void;
   /** workspace 文件搜索默认使用内置过滤器；后续规则来源只需在 Host 装配时注入最终实现。 */
   workspaceFileSearchFilter?: WorkspaceFileSearchFilter;
   forwardSessionMessageSendRequested?: (
@@ -2225,6 +2226,7 @@ export function createLocalServices(options: {
     workspaceIdentity: undefined,
   });
   const zcodeAgentService = createZCodeAgentService({
+    reportAuditTaskEvent: options?.reportAuditTaskEvent,
     createControllerPrivateChannel: options?.createControllerPrivateChannel,
     confidentialControllerLockedContent: options?.confidentialControllerLockedContent,
     prepareProjectExecution,

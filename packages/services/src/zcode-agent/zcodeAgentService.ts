@@ -992,6 +992,7 @@ interface CreateZCodeAgentServiceOptions extends Omit<
   ZCodeAgentProcessManagerOptions,
   "idleTimeoutMs"
 > {
+  reportAuditTaskEvent?: (event: { taskId: string; turnId: string; phase: "started" | "finished"; result?: string }) => void;
   /** 仅供 MCP 状态探测进程使用，不能把空闲回收传给 chat。 */
   mcpStatusIdleTimeoutMs?: number;
   accountProviderConfigSource?: ProviderSource<AccountProviderConfigSnapshot>;
@@ -2061,6 +2062,16 @@ export function createZCodeAgentService(
     const normalizedEvent = normalizeSessionEventSeq(workspace, event);
     if (!shouldDeliverLiveSessionEvent(workspace, normalizedEvent)) {
       return;
+    }
+    // 唯一 live 事件入口在订阅广播之前，避免无 UI 订阅漏报或多订阅重复上报。
+    if (normalizedEvent.turnId && normalizedEvent.type === "turn.started") {
+      options?.reportAuditTaskEvent?.({ taskId: normalizedEvent.sessionId, turnId: normalizedEvent.turnId, phase: "started" });
+    } else if (normalizedEvent.turnId && normalizedEvent.type === "turn.completed") {
+      const payload = normalizedEvent.payload as { resultType?: unknown };
+      if (typeof payload.resultType === "string") options?.reportAuditTaskEvent?.({ taskId: normalizedEvent.sessionId, turnId: normalizedEvent.turnId, phase: "finished", result: payload.resultType });
+    } else if (normalizedEvent.turnId && normalizedEvent.type === "turn.failed") {
+      const payload = normalizedEvent.payload as { turnPhase?: unknown };
+      if (payload.turnPhase !== "compact") options?.reportAuditTaskEvent?.({ taskId: normalizedEvent.sessionId, turnId: normalizedEvent.turnId, phase: "finished", result: "error_during_execution" });
     }
     emitSessionEvent(workspace, normalizedEvent.sessionId, {
       type: "session.event",

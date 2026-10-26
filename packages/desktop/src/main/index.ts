@@ -9,6 +9,7 @@ import { createControllerLockedStore } from "@zcode/services/controller-locked-s
 import { installRequestSecurityDiagnostics } from "./request-security-edition/index.js";
 import { createLocalTtftExporter } from "./localTtftExporter.js";
 import { createFeedbackDiagnosticBundleBuilder } from "./ccode-platform-runtime-wiring/diagnostic-builder.js";
+import { readBuildMetadata } from "./about.js";
 /* eslint-disable max-lines */
 import "./desktopEarlyChromiumHardwareAccelerationBootstrap.js";
 import { powerMonitor, powerSaveBlocker, safeStorage } from "electron";
@@ -707,7 +708,7 @@ const ccodeControllerApplication = createControllerApplication({
   trusts: [ccodeControllerTrust],
   lockedStore: ccodeControllerLockedStore,
 });
-const ccodePlatform = createDesktopCcodePlatformRuntimeWiring({ account: ccodeControllerApplication.account, storageDirectory: join(app.getPath("userData"), "ccode-platform"), apiBaseUrl: ccodeApiBaseUrl, commandSignerPublicKeyPem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA4Fice+HrcSUzJg9NCLgKtvjYFwvV1ldQwDfBOETEPMA=\n-----END PUBLIC KEY-----\n", homeDirectory: app.getPath("home"), workingDirectory: process.cwd(), diagnosticArchiveBuilder: createFeedbackDiagnosticBundleBuilder({ outputRootDir: join(app.getPath("userData"), "ccode-diagnostics") }) });
+const ccodePlatform = createDesktopCcodePlatformRuntimeWiring({ account: ccodeControllerApplication.account, storageDirectory: join(app.getPath("userData"), "ccode-platform"), apiBaseUrl: ccodeApiBaseUrl, ccodeRelease: readBuildMetadata()?.productVersion ?? ZCODE_VERSION, instanceId: ensureDesktopDeviceMidSync(), getControllerAttribution: async () => { const { version, digest } = await ccodeControllerLockedStore.load(); return { version, digest }; }, commandSignerPublicKeyPem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA4Fice+HrcSUzJg9NCLgKtvjYFwvV1ldQwDfBOETEPMA=\n-----END PUBLIC KEY-----\n", homeDirectory: app.getPath("home"), workingDirectory: process.cwd(), diagnosticArchiveBuilder: createFeedbackDiagnosticBundleBuilder({ outputRootDir: join(app.getPath("userData"), "ccode-diagnostics") }) });
 // 进程崩溃恢复（spec §6A 错误源②）：子进程非受控退出即视为崩溃恢复信号上报诊断触发器；
 // clean-exit/killed 为受控终止不上报（判据对齐 desktopCrashCapture.resolveProcessGoneLogLevel）。
 app.on("child-process-gone", (_event, details) => {
@@ -1986,6 +1987,10 @@ function createWindowInstance(startupBootstrap: StartupWindowBootstrap = {}) {
           },
           onSessionCreateTelemetry: (message) => {
             void appTelemetryCore.reportEvent(message.event).catch(() => {});
+          },
+          onAuditTaskEvent: (message) => {
+            if (message.phase === "started") void ccodePlatform.reportTaskStarted(message.taskId, message.turnId);
+            else void ccodePlatform.reportTaskTerminal(message.taskId, message.turnId, message.result);
           },
           onCronRunResult: forwardCronRunResult,
           onOffPeakRunResult: forwardOffPeakRunResult,

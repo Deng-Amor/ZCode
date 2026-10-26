@@ -25,8 +25,10 @@ describe("ccode-platform-runtime-wiring contract", () => {
       fetch: async () => new Response(""),
       dispose: async () => undefined,
       reportDiagnosticErrorTrigger: () => undefined,
+      reportTaskStarted: async () => undefined,
+      reportTaskTerminal: async () => undefined,
     };
-    expect(Object.keys(wiring).sort()).toEqual(["dispose", "fetch", "reportDiagnosticErrorTrigger"]);
+    expect(Object.keys(wiring).sort()).toEqual(["dispose", "fetch", "reportDiagnosticErrorTrigger", "reportTaskStarted", "reportTaskTerminal"]);
   });
 
   it("options carry all injected paths and knobs (no electron imports reachable)", () => {

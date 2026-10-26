@@ -176,6 +176,12 @@ describe("audit telemetry strict schema", () => {
     }
   });
 
+  it("keeps a UUID statistical instance but rejects an arbitrary device label", () => {
+    const event = testLifecycleEvent({ attribution: { ...COMPLETE_ATTRIBUTION, instanceId: "00000000-0000-4000-8000-000000000001" } });
+    expect(JSON.parse(serializeAuditTelemetryEvent(event)).attribution.instanceId).toBe("00000000-0000-4000-8000-000000000001");
+    expect(auditTelemetryEventSchema.safeParse({ ...event, attribution: { ...event.attribution, instanceId: "unverified-device" } }).success).toBe(false);
+  });
+
   it("serializes with fixed key order and drops unknown fields instead of failing", () => {
     const event = testLifecycleEvent();
     const baseline = serializeAuditTelemetryEvent(event);

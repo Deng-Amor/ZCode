@@ -5,7 +5,7 @@ import {
   type CcodePlatformRuntime,
   type CcodePlatformRuntimeDeps,
 } from "@zcode/services/ccode-platform-runtime";
-import { createAuditTelemetryDiskQueue, createAuditTelemetryHttpUploader, createAuditTelemetryPolicyGate, createAuditTelemetryUploadScheduler, createDiagnosticBundleTrigger, DEFAULT_AUDIT_TELEMETRY_POLICY } from "@zcode/services/audit-telemetry";
+import { createAuditTelemetryCollector, createAuditTelemetryDiskQueue, createAuditTelemetryHttpUploader, createAuditTelemetryPolicyGate, createAuditTelemetryUploadScheduler, createDiagnosticBundleTrigger, DEFAULT_AUDIT_TELEMETRY_POLICY, type AuditTelemetryAttribution, type AuditTelemetryRawEvent } from "@zcode/services/audit-telemetry";
 import { createExpertSkillCacheStore } from "@zcode/services/expert-skills";
 import { createSkillReflowHttpUploader, createSkillReflowLedgerFile, createSkillReflowQueueFile, createSkillReflowRootsProvider, createSkillReflowUploadDriver, createSkillReflowUploadService, type SkillReflowPlatform } from "@zcode/services/skill-reflow-upload";
 import { createCommandChannelDiskStore, createCommandChannelProcessor, createCommandChannelReceiptUploader, createLongPollTransport, createNotCollectedSource, createPullChatLogsExecutor, createPullRunLogsExecutor, createPullSkillUsageStatsExecutor, createRunLogsSource, verifyCommandChannelEnvelopeSignature, DEFAULT_COMMAND_CHANNEL_POLICY } from "@zcode/services/platform-command-channel";
@@ -16,26 +16,46 @@ export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePla
   let runtime: CcodePlatformRuntime | undefined;
   let transport: { start(): Promise<void>; stop(): Promise<void> } | undefined;
   let disposed = false;
-  let lastAuthenticated: boolean | undefined;
+  let runtimeIdentity: string | undefined;
   let active = false;
   let transition: Promise<void> = Promise.resolve();
   let diagnosticTrigger: ReturnType<typeof createDiagnosticBundleTrigger> | undefined;
+  let collector: ReturnType<typeof createAuditTelemetryCollector> | undefined;
+  let collectorSink: ((event: AuditTelemetryRawEvent) => void) | undefined;
+  let currentAttribution: AuditTelemetryAttribution | undefined;
+  const turnAttributions = new Map<string, Promise<AuditTelemetryAttribution | undefined>>();
+  const turnKey = (taskId: string, turnId: string) => JSON.stringify([taskId, turnId]);
   const authFetch: typeof fetch = async (input, init) => {
     const headers = new Headers(init?.headers);
     for (const [name, value] of Object.entries(await options.account.getAuthHeaders())) headers.set(name, value);
     return (options.fetchImpl ?? fetch)(input, { ...init, headers });
   };
-  const build = async () => {
-    if (runtime) return runtime;
-    const state = await options.account.getState();
-    if (!state.authenticated) return undefined;
-    const identity = { tenantId: state.tenantId ?? "unknown", userId: state.userId ?? "unknown" };
-    const tokenProvider = { getHeaders: () => options.account.getAuthHeaders() };
+  const build = async (identity: { tenantId: string; userId: string }) => {
+    const expectedIdentity = JSON.stringify([identity.tenantId, identity.userId]);
+    const tokenProvider = { getHeaders: async () => {
+      const before = await options.account.getState();
+      if (JSON.stringify([before.tenantId, before.userId]) !== expectedIdentity || !before.authenticated) throw new Error("AUTH_REQUIRED");
+      const headers = await options.account.getAuthHeaders();
+      const after = await options.account.getState();
+      if (JSON.stringify([after.tenantId, after.userId]) !== expectedIdentity || !after.authenticated) throw new Error("AUTH_REQUIRED");
+      return headers;
+    } };
+    const scopedFetch: typeof fetch = async (input, init) => {
+      const headers = new Headers(init?.headers);
+      for (const [name, value] of Object.entries(await tokenProvider.getHeaders())) headers.set(name, value);
+      return (options.fetchImpl ?? fetch)(input, { ...init, headers });
+    };
     const deps: CcodePlatformRuntimeDeps = {
       createAudit: () => {
         const queue = createAuditTelemetryDiskQueue({ storageDirectory: options.storageDirectory, identity });
         const policyGate = createAuditTelemetryPolicyGate(DEFAULT_AUDIT_TELEMETRY_POLICY);
-        const scheduler = createAuditTelemetryUploadScheduler({ queue, uploader: createAuditTelemetryHttpUploader({ baseUrl: options.apiBaseUrl, tokenProvider, fetchImpl: authFetch }), timers: { now: Date.now, schedule: (cb, ms) => setTimeout(cb, ms) as unknown as number, cancel: (id) => clearTimeout(id) } });
+        const scheduler = createAuditTelemetryUploadScheduler({ queue, uploader: createAuditTelemetryHttpUploader({ baseUrl: options.apiBaseUrl, tokenProvider, fetchImpl: scopedFetch }), timers: { now: Date.now, schedule: (cb, ms) => setTimeout(cb, ms) as unknown as number, cancel: (id) => clearTimeout(id) } });
+        collector = createAuditTelemetryCollector({
+          source: { subscribe: (listener) => { collectorSink = listener; return () => { if (collectorSink === listener) collectorSink = undefined; }; } },
+          attribution: () => currentAttribution!,
+          queue,
+          policy: policyGate,
+        });
         if (options.diagnosticArchiveBuilder) {
           diagnosticTrigger = createDiagnosticBundleTrigger({
             builder: options.diagnosticArchiveBuilder,
@@ -84,7 +104,9 @@ export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePla
   if (command.type === "command.pull_chat_logs") return createPullChatLogsExecutor({ source: createNotCollectedSource() }).execute(command);
   return createPullSkillUsageStatsExecutor({ source: createNotCollectedSource() }).execute(command);
 } }, noticeSink: { dispatch: async () => {} }, auditSink: { record: async () => {} }, store: createCommandChannelDiskStore({ storageDirectory: options.storageDirectory, identity }), getPolicy: () => DEFAULT_COMMAND_CHANNEL_POLICY, now: () => new Date() }),
-      startTransport: async () => transport?.start(), stopTransport: async () => transport?.stop(),
+      // 长轮询 start 返回运行至 stop 的 Promise；等待它会卡住登录启动与身份切换。
+      startTransport: () => { void transport?.start().catch((error) => warn("CCode command channel poll failed", error)); },
+      stopTransport: async () => transport?.stop(),
     };
     runtime = options.createRuntime?.(deps) ?? createCcodePlatformRuntime({ storageDirectory: options.storageDirectory }, deps);
     const processEnvelope = (envelope: unknown) => runtime!.processCommand(envelope);
@@ -147,13 +169,78 @@ export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePla
     transport = options.createTransport?.(raw) ?? raw;
     return runtime;
   };
-  const sync = async () => { if (disposed) return; try { const state = await options.account.getState(); if (lastAuthenticated === state.authenticated && runtime) return; lastAuthenticated = state.authenticated; const current = await build(); if (!current) return; if (state.authenticated) { if (!active) { await current.start(); active = true; void diagnosticTrigger?.runDailyDigest(); } } else if (active) { await current.stop(); active = false; } } catch (error) { warn("CCode platform runtime state transition failed", error); void diagnosticTrigger?.triggerOnError("controller_bootstrap_failed"); } };
+  const teardown = async () => {
+    active = false;
+    collector?.stop();
+    await collector?.flush();
+    try { await runtime?.stop(); await runtime?.dispose(); } finally {
+      runtime = undefined; runtimeIdentity = undefined; transport = undefined;
+      collector = undefined; collectorSink = undefined; diagnosticTrigger = undefined;
+      currentAttribution = undefined; turnAttributions.clear();
+    }
+  };
+  const sync = async () => {
+    if (disposed) return;
+    try {
+      const state = await options.account.getState();
+      const identity = state.authenticated && state.tenantId && state.userId
+        ? { tenantId: state.tenantId, userId: state.userId } : undefined;
+      const key = identity ? JSON.stringify([identity.tenantId, identity.userId]) : undefined;
+      if (runtime && runtimeIdentity !== key) await teardown();
+      if (!identity) return;
+      if (runtime) { await runtime.auditTelemetry?.scheduler.notifyAuthenticated(); return; }
+      const current = await build(identity);
+      runtimeIdentity = key;
+      await current.start(); active = true; collector?.start();
+      await current.auditTelemetry?.scheduler.notifyAuthenticated();
+      void diagnosticTrigger?.runDailyDigest();
+    } catch (error) { warn("CCode platform runtime state transition failed", error); void diagnosticTrigger?.triggerOnError("controller_bootstrap_failed"); }
+  };
   const unsubscribe = options.account.onStateChanged(() => { transition = transition.then(sync); });
-  void sync();
+  transition = transition.then(sync);
   return {
     fetch: authFetch,
     // build 前没有 diagnosticTrigger；未登录或未配置 builder 时按契约静默 no-op。
     reportDiagnosticErrorTrigger: (reason) => { void diagnosticTrigger?.triggerOnError(reason); },
-    dispose: async () => { if (disposed) return; disposed = true; unsubscribe(); transition = transition.then(async () => { try { if (active) await runtime?.stop(); active = false; await runtime?.dispose(); } catch (error) { warn("CCode platform runtime dispose failed", error); } }); await transition; },
+    reportTaskStarted: async (taskId, turnId) => {
+      const ccodeRelease = options.ccodeRelease;
+      if (!active || !collectorSink || !options.getControllerAttribution || !options.instanceId || !ccodeRelease || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(ccodeRelease)) return;
+      const identity = runtimeIdentity;
+      const key = turnKey(taskId, turnId);
+      if (turnAttributions.has(key)) return;
+      if (turnAttributions.size >= 1000) turnAttributions.delete(turnAttributions.keys().next().value!);
+      // 先登记 Promise，再读账号/锁定副本；极快的终态也能等待同一轮开始归因。
+      const attribution = (async (): Promise<AuditTelemetryAttribution | undefined> => {
+        const state = await options.account.getState();
+        if (!state.authenticated || JSON.stringify([state.tenantId, state.userId]) !== identity) return undefined;
+        const controller = await options.getControllerAttribution!();
+        return {
+          ccodeRelease,
+          platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux",
+          skillVersion: String(controller.version), skillDigest: controller.digest,
+          instanceId: options.instanceId,
+        };
+      })().catch((error) => { warn("CCode audit task start attribution unavailable", error); return undefined; });
+      turnAttributions.set(key, attribution);
+      await attribution;
+      if (identity !== runtimeIdentity) turnAttributions.delete(key);
+    },
+    reportTaskTerminal: async (taskId, turnId, result) => {
+      const key = turnKey(taskId, turnId);
+      const pendingAttribution = turnAttributions.get(key);
+      if (!active || !collectorSink || !pendingAttribution) return;
+      turnAttributions.delete(key);
+      const identity = runtimeIdentity;
+      try {
+        const attribution = await pendingAttribution;
+        if (!attribution || !active || !collectorSink || identity !== runtimeIdentity) return;
+        const state = await options.account.getState();
+        if (!state.authenticated || JSON.stringify([state.tenantId, state.userId]) !== identity) return;
+        currentAttribution = attribution;
+        collectorSink({ kind: "turn", result, subjectRef: { kind: "session", id: taskId } });
+        await collector?.flush();
+      } catch (error) { warn("CCode audit task terminal attribution unavailable", error); }
+    },
+    dispose: async () => { if (disposed) return; disposed = true; unsubscribe(); transition = transition.then(async () => { try { await teardown(); } catch (error) { warn("CCode platform runtime dispose failed", error); } }); await transition; },
   };
 }

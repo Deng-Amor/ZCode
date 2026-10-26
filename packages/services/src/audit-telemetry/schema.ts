@@ -281,6 +281,7 @@ export const auditTelemetryAttributionSchema = z.strictObject({
   platform: auditTelemetryPlatformSchema,
   skillVersion: z.string().min(1).optional(),
   skillDigest: z.string().min(1).optional(),
+  instanceId: z.uuid().optional(),
 });
 export type AuditTelemetryAttribution = z.infer<
   typeof auditTelemetryAttributionSchema
@@ -496,6 +497,7 @@ function projectEvent(value: Record<string, unknown>): Record<string, unknown> {
     "platform",
     "skillVersion",
     "skillDigest",
+    "instanceId",
   ]);
   return envelope;
 }

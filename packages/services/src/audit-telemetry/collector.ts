@@ -22,7 +22,7 @@ import { sanitizeErrorPayload } from "./sanitizer.js";
 import { createAuditTelemetryPolicyGate, type AuditTelemetryPolicyGate } from "./policy.js";
 
 export type AuditTelemetryRawEvent =
-  | { kind: "turn"; result: string; subjectRef: AuditTelemetryEvent["payload"] extends { subjectRef: infer T } ? T : never; channel?: "lifecycle" }
+  | { kind: "turn"; result: string; subjectRef: Extract<AuditTelemetryEvent, { type: "task.lifecycle" }>["payload"]["subjectRef"]; channel?: "lifecycle" }
   | { kind: "cliTask" | "backgroundTask" | "workflowRun" | "bootstrapFailure"; status: string; subjectRef: Extract<AuditTelemetryEvent, { type: "task.lifecycle" }>["payload"]["subjectRef"]; channel?: "lifecycle" }
   | { kind: "error"; error: AuditTelemetryErrorPayloadInput; errorCode: string; channel?: AuditTelemetryChannel }
   | { kind: "tool"; toolCallId: string; toolName: string; resultStatus: "started" | "completed" | "failed" | "denied"; subjectRef: Extract<AuditTelemetryEvent, { type: "task.lifecycle" }>["payload"]["subjectRef"]; durationMs?: number; pluginId?: string; skillMetadata?: Record<string, string>; channel?: "diagnostic" };

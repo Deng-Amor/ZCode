@@ -22,6 +22,10 @@ export interface DesktopCcodePlatformRuntimeWiringOptions {
   readonly apiBaseUrl: string;
   /** 回流归因字段，客户端自报。 */
   readonly ccodeRelease?: string;
+  /** 本地持久 UUID，仅用于未验证的统计实例归因。 */
+  readonly instanceId?: string;
+  /** 当前已验签锁定总控的版本与摘要；缺失时不铸造普通任务事件。 */
+  readonly getControllerAttribution?: () => Promise<{ version: number; digest: string }>;
   /** 指令信封验签公钥 PEM（占位：待中台指令签名公钥定稿，M7 OQ）。 */
   readonly commandSignerPublicKeyPem: string;
   /** skill 回流扫描 home 根。 */
@@ -44,6 +48,8 @@ export interface DesktopCcodePlatformRuntimeWiring {
   fetch: typeof fetch;
   /** 外部错误源上报（spec §6A）：未启用诊断（无 builder）时 no-op；永不 reject。 */
   reportDiagnosticErrorTrigger(reason: "task_failed" | "crash_recovery" | "controller_bootstrap_failed"): void;
+  reportTaskStarted(taskId: string, turnId: string): Promise<void>;
+  reportTaskTerminal(taskId: string, turnId: string, result: string): Promise<void>;
   /** 幂等：退订账号监听→停 transport→runtime.stop+dispose；永不 reject。 */
   dispose(): Promise<void>;
 }

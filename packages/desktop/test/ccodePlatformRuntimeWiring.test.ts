@@ -14,7 +14,7 @@ function setup() {
   const runtime = { start: vi.fn(async () => calls.push("runtime.start")), stop: vi.fn(async () => calls.push("runtime.stop")), dispose: vi.fn(async () => calls.push("runtime.dispose")), processCommand: vi.fn(async () => ({})) };
   const transport = { start: vi.fn(async () => calls.push("transport.start")), stop: vi.fn(async () => calls.push("transport.stop")) };
   const account = {
-    getState: vi.fn(async () => ({ authenticated })),
+    getState: vi.fn(async () => ({ authenticated, tenantId: "7", userId: "9" })),
     onStateChanged: (cb: () => void) => { listeners.add(cb); return () => listeners.delete(cb); },
     getAuthHeaders: vi.fn(async () => ({ authorization: "Bearer token", "tenant-id": "tenant" })),
   };
@@ -23,14 +23,101 @@ function setup() {
 }
 
 describe("desktop CCode platform runtime wiring", () => {
+  it("queues ordinary task terminal with verified skill and statistical instance attribution", async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), "ccode-wiring-audit-"));
+    let audit: ReturnType<Parameters<Parameters<typeof createDesktopCcodePlatformRuntimeWiring>[0]["createRuntime"]>[0]["createAudit"]> | undefined;
+    try {
+      const s = setup();
+      s.account.getState.mockImplementation(async () => ({ authenticated: true, tenantId: "7", userId: "9" }));
+      let controllerVersion = 1;
+      const wiring = createDesktopCcodePlatformRuntimeWiring({
+        account: s.account, storageDirectory: storageRoot, apiBaseUrl: "https://example.test/",
+        ccodeRelease: "0.0.9", instanceId: "00000000-0000-4000-8000-000000000001",
+        getControllerAttribution: async () => ({ version: controllerVersion, digest: controllerVersion === 1 ? "a".repeat(64) : "b".repeat(64) }),
+        commandSignerPublicKeyPem: "key", homeDirectory: "home", workingDirectory: "work",
+        createRuntime: (deps) => { audit = deps.createAudit({ storageDirectory: storageRoot }, deps); return s.runtime as never; },
+        createTransport: () => s.transport,
+      });
+      await vi.waitFor(() => expect(s.runtime.start).toHaveBeenCalled());
+      await wiring.reportTaskStarted("task-1", "turn-1");
+      controllerVersion = 2;
+      await wiring.reportTaskTerminal("task-1", "turn-1", "success");
+      const records = await audit!.queue.take(10, "lifecycle");
+      expect(records).toHaveLength(1);
+      expect(JSON.parse(records[0]!.serializedEvent)).toMatchObject({
+        type: "task.lifecycle", payload: { lifecycleStatus: "completed", subjectRef: { id: "task-1" } },
+        attribution: { ccodeRelease: "0.0.9", skillVersion: "1", skillDigest: "a".repeat(64), instanceId: "00000000-0000-4000-8000-000000000001" },
+      });
+      await wiring.reportTaskTerminal("task-2", "missing-start", "success");
+      expect(await audit!.queue.take(10, "lifecycle")).toHaveLength(1);
+      let releaseState!: (state: { authenticated: boolean; tenantId: string; userId: string }) => void;
+      s.account.getState.mockImplementationOnce(() => new Promise((resolve) => { releaseState = resolve; }));
+      const started = wiring.reportTaskStarted("task-fast", "turn-fast");
+      const finished = wiring.reportTaskTerminal("task-fast", "turn-fast", "success");
+      releaseState({ authenticated: true, tenantId: "7", userId: "9" });
+      await Promise.all([started, finished]);
+      expect(await audit!.queue.take(10, "lifecycle")).toHaveLength(2);
+      await wiring.dispose();
+      await audit!.queue.dispose();
+    } finally { await rm(storageRoot, { recursive: true, force: true }); }
+  });
+
+  it("isolates pending audit queues across account changes", async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), "ccode-audit-identity-"));
+    let userId = "9";
+    const listeners = new Set<() => void>();
+    const created: Array<{ userId: string; audit: ReturnType<Parameters<NonNullable<DesktopCcodePlatformRuntimeWiringOptions["createRuntime"]>>[0]["createAudit"]> }> = [];
+    const uploads: Array<{ userId: string; url: string }> = [];
+    const account = {
+      getState: async () => ({ authenticated: true, tenantId: "7", userId }),
+      onStateChanged: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+      getAuthHeaders: async () => ({ authorization: `Bearer ${userId}`, "tenant-id": "7" }),
+    };
+    const wiring = createDesktopCcodePlatformRuntimeWiring({
+      account, storageDirectory: storageRoot, apiBaseUrl: "https://example.test/", ccodeRelease: "0.0.9",
+      instanceId: "00000000-0000-4000-8000-000000000001",
+      getControllerAttribution: async () => ({ version: 1, digest: "a".repeat(64) }),
+      commandSignerPublicKeyPem: "key", homeDirectory: "home", workingDirectory: "work",
+      fetchImpl: async (input, init) => {
+        uploads.push({ userId: new Headers(init?.headers).get("authorization")?.replace("Bearer ", "") ?? "", url: String(input) });
+        const request = JSON.parse(String(init?.body)) as { items: Array<{ commandId: string }> };
+        return new Response(JSON.stringify({ code: 0, data: { results: request.items.map((item) => ({ commandId: item.commandId, status: "accepted" })) } }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+      createRuntime: (deps) => {
+        const audit = deps.createAudit({ storageDirectory: storageRoot }, deps);
+        created.push({ userId, audit });
+        return { auditTelemetry: audit, start: async () => undefined, stop: async () => undefined, dispose: () => audit.scheduler.dispose(), processCommand: async () => ({}) } as never;
+      },
+      createTransport: () => ({ start: async () => undefined, stop: async () => undefined }),
+    });
+    try {
+      await vi.waitFor(() => expect(created).toHaveLength(1));
+      await wiring.reportTaskStarted("task-a", "turn-a");
+      await wiring.reportTaskTerminal("task-a", "turn-a", "success");
+      expect((await created[0]!.audit.queue.stats()).pendingRecords).toBe(1);
+      userId = "10"; listeners.forEach((listener) => listener());
+      await vi.waitFor(() => expect(created).toHaveLength(2));
+      expect(uploads.some((item) => item.url.includes("ccode-audit-telemetry") && item.userId === "10")).toBe(false);
+      expect((await created[1]!.audit.queue.stats()).pendingRecords).toBe(0);
+      await wiring.reportTaskStarted("task-b", "turn-b");
+      await wiring.reportTaskTerminal("task-b", "turn-b", "success");
+      expect((await created[1]!.audit.queue.stats()).pendingRecords).toBe(1);
+      userId = "9"; listeners.forEach((listener) => listener());
+      await vi.waitFor(() => expect(created).toHaveLength(3));
+      expect((await created[2]!.audit.queue.stats()).pendingRecords).toBe(1);
+      created[2]!.audit.scheduler.start();
+      await created[2]!.audit.scheduler.notifyAuthenticated();
+      expect(uploads.filter((item) => item.url.includes("ccode-audit-telemetry")).map((item) => item.userId)).toEqual(["9"]);
+    } finally { await wiring.dispose(); await rm(storageRoot, { recursive: true, force: true }); }
+  });
+
   it("starts and stops once per account transition and disposes idempotently", async () => {
     const s = setup();
     await s.login(); await new Promise((resolve) => setTimeout(resolve, 0)); await s.login();
     await s.logout(); await new Promise((resolve) => setTimeout(resolve, 0)); await s.login(); await new Promise((resolve) => setTimeout(resolve, 0));
     await s.wiring.dispose(); await s.wiring.dispose();
     expect(s.runtime.start).toHaveBeenCalledTimes(2);
-    expect(s.runtime.stop).toHaveBeenCalledTimes(2);
-    expect(s.runtime.dispose).toHaveBeenCalledTimes(1);
+    expect(s.runtime.dispose).toHaveBeenCalledTimes(2);
   });
 
   it("injects auth headers into transport fetch and contains lifecycle errors", async () => {
@@ -140,10 +227,10 @@ describe("desktop CCode platform runtime wiring", () => {
     let capturedDeps: Parameters<NonNullable<DesktopCcodePlatformRuntimeWiringOptions["createRuntime"]>>[0] | undefined;
     const runtime = { ...s.runtime, start: vi.fn(async () => { capturedDeps?.createAudit({ storageDirectory: "storage" }, capturedDeps); }) };
     const wiring = createDesktopCcodePlatformRuntimeWiring({ account: s.account, storageDirectory: "storage", apiBaseUrl: "https://example.test/", commandSignerPublicKeyPem: "key", homeDirectory: "home", workingDirectory: "work", diagnosticArchiveBuilder: builder, warn, createRuntime: (deps) => { capturedDeps = deps; return runtime as never; }, createTransport: () => s.transport });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => expect(builder.build).toHaveBeenCalledTimes(1));
     shouldThrow = true;
     s.notify();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => expect(builder.build).toHaveBeenCalledTimes(2));
     expect(wiring).toBeDefined();
     await wiring.dispose();
     expect(warn).toHaveBeenCalled();

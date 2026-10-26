@@ -1290,6 +1290,13 @@ export type HostSessionCreateTelemetryResponse = z.infer<
   typeof hostSessionCreateTelemetryResponseSchema
 >;
 
+/** Host 只传不含正文的普通任务终态；Main 独占归因与持久队列。 */
+export const hostAuditTaskEventResponseSchema = z.discriminatedUnion("phase", [
+  z.strictObject({ type: z.literal("audit-task-event"), taskId: z.string().min(1).max(256), turnId: z.string().min(1).max(256), phase: z.literal("started") }),
+  z.strictObject({ type: z.literal("audit-task-event"), taskId: z.string().min(1).max(256), turnId: z.string().min(1).max(256), phase: z.literal("finished"), result: z.enum(["success", "cancelled", "error_max_turns", "error_max_budget", "error_during_execution", "error_max_tool_calls"]) }),
+]);
+export type HostAuditTaskEventResponse = z.infer<typeof hostAuditTaskEventResponseSchema>;
+
 export const hostAgentRunningTaskCountChangedResponseSchema = z.object({
   type: z.literal("agent-running-task-count-changed"),
   runningTaskCount: z.number().int().nonnegative(),
@@ -1586,6 +1593,7 @@ export const hostResponseMessageSchema = z.discriminatedUnion("type", [
   hostMcpResourceSamplesResponseSchema,
   hostToolExecResourceResponseSchema,
   hostSessionCreateTelemetryResponseSchema,
+  hostAuditTaskEventResponseSchema,
   hostPluginTelemetryResponseSchema,
   hostAgentRunningTaskCountChangedResponseSchema,
   hostWorkspaceRunningTaskCountChangedResponseSchema,
