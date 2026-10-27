@@ -670,7 +670,7 @@ let appQuitPreparationInFlight: Promise<void> | null = null;
 let hasPreparedAppQuit = false;
 const windowWorkspaceMap = new Map<number, Set<string>>();
 // 应用级内存所有者；仅内置验签公钥，私钥和核心正文由管理员及中台保管。
-const ccodeApiBaseUrl = "https://dp.sccsai.com/admin-api/";
+const ccodeApiBaseUrl = process.env.CCODE_ISOLATED_API_BASE_URL?.trim() || "https://dp.sccsai.com/admin-api/";
 const ccodeControllerTrust = {
   skillId: "controller",
   name: "总控派单",
@@ -752,7 +752,7 @@ const ccodeControllerApplication = createControllerApplication({
   trusts: [ccodeControllerTrust],
   lockedStore: ccodeControllerLockedStore,
 });
-const ccodePlatform = createDesktopCcodePlatformRuntimeWiring({ account: ccodeControllerApplication.account, storageDirectory: join(app.getPath("userData"), "ccode-platform"), apiBaseUrl: ccodeApiBaseUrl, ccodeRelease: readBuildMetadata()?.productVersion ?? ZCODE_VERSION, instanceId: ensureDesktopDeviceMidSync(), getControllerAttribution: async () => { const { version, digest } = await ccodeControllerLockedStore.load(); return { version, digest }; }, commandSignerPublicKeyPem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA4Fice+HrcSUzJg9NCLgKtvjYFwvV1ldQwDfBOETEPMA=\n-----END PUBLIC KEY-----\n", homeDirectory: app.getPath("home"), workingDirectory: process.cwd(), diagnosticArchiveBuilder: createFeedbackDiagnosticBundleBuilder({ outputRootDir: join(app.getPath("userData"), "ccode-diagnostics") }), deviceIdentity: { get: async () => { try { return await ccodeDeviceIdentityStore.loadOrCreate(); } catch { return undefined; } } } });
+const ccodePlatform = createDesktopCcodePlatformRuntimeWiring({ account: ccodeControllerApplication.account, storageDirectory: join(app.getPath("userData"), "ccode-platform"), apiBaseUrl: ccodeApiBaseUrl, ccodeRelease: readBuildMetadata()?.productVersion ?? ZCODE_VERSION, instanceId: ensureDesktopDeviceMidSync(), getControllerAttribution: async () => { const { version, digest } = await ccodeControllerLockedStore.load(); return { version, digest }; }, commandSignerPublicKeyPem: process.env.CCODE_ISOLATED_COMMAND_SIGNER_PEM?.trim() || "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA4Fice+HrcSUzJg9NCLgKtvjYFwvV1ldQwDfBOETEPMA=\n-----END PUBLIC KEY-----\n", homeDirectory: app.getPath("home"), workingDirectory: process.cwd(), diagnosticArchiveBuilder: createFeedbackDiagnosticBundleBuilder({ outputRootDir: join(app.getPath("userData"), "ccode-diagnostics") }), deviceIdentity: { get: async () => { try { return await ccodeDeviceIdentityStore.loadOrCreate(); } catch { return undefined; } } } });
 // 进程崩溃恢复（spec §6A 错误源②）：子进程非受控退出即视为崩溃恢复信号上报诊断触发器；
 // clean-exit/killed 为受控终止不上报（判据对齐 desktopCrashCapture.resolveProcessGoneLogLevel）。
 app.on("child-process-gone", (_event, details) => {
