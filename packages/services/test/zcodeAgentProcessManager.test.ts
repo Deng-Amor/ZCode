@@ -186,6 +186,8 @@ describe("resolveDefaultZCodeAgentCommand", () => {
     expect(command).toEqual({
       supportsStorageStartup: true,
       storagePreparationEntry: expect.any(String),
+      // 71d19337 起向 Agent 命令传入锁定内容端口入口（confidential-controller 叶子导出）。
+      confidentialControllerBundleEntry: expect.any(String),
       command: process.execPath,
       args: [expect.any(String), "app-server", "--stdio"],
       cwd: "/repo/workspace",

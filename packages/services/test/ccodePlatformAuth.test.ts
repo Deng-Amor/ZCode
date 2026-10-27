@@ -33,8 +33,34 @@ function store(initial: unknown = undefined) {
 function app(
   sessionStore: ReturnType<typeof store>,
   trusts: Parameters<typeof createControllerApplication>[0]["trusts"] = [],
+  lockedStore?: Parameters<typeof createControllerApplication>[0]["lockedStore"],
 ) {
-  return createControllerApplication({ apiBaseUrl, trusts, sessionStore });
+  return createControllerApplication({ apiBaseUrl, trusts, sessionStore, lockedStore });
+}
+// 锁定存储内存实现：install 捉住验签后的包，load 以 LockedContent 形状回放（digest 与 grant 同源计算）。
+function lockedContentStore(payloadBytes: Buffer) {
+  let installed:
+    | { version: number; digest: string; skillMd: string; files: { path: string; bytes: Uint8Array }[] }
+    | undefined;
+  return {
+    install: vi.fn(async (verified: { version: number; files: { path: string; bytes: Uint8Array }[] }) => {
+      const skill = verified.files.find((file) => file.path === "SKILL.md") ?? verified.files[0]!;
+      installed = {
+        version: verified.version,
+        digest: createHash("sha256").update(payloadBytes).digest("hex"),
+        skillMd: Buffer.from(skill.bytes).toString("utf8"),
+        files: verified.files,
+      };
+    }),
+    status: vi.fn(async () => ({
+      state: installed ? "ready" : "empty",
+      ...(installed ? { current: { version: installed.version } } : {}),
+    })),
+    load: vi.fn(async () => {
+      if (!installed) throw new Error("empty locked store");
+      return installed;
+    }),
+  };
 }
 function reply(refreshToken = "refresh-new", userId = "2") {
   return Response.json({
@@ -102,7 +128,7 @@ describe("CCode persisted login", () => {
       return reply();
     });
     vi.stubGlobal("fetch", fetcher);
-    const owner = app(store(), [trust]);
+    const owner = app(store(), [trust], lockedContentStore(payloadBytes));
 
     expect(await owner.account.login(input)).toMatchObject({
       authenticated: true,
@@ -122,12 +148,18 @@ describe("CCode persisted login", () => {
     const send = vi.fn();
     const close = vi.fn();
     const channel = owner.createPrivateChannel({ send, close });
+    // 2026-10-27 启动门禁解耦与锁定存储架构后，私有通道的 bootstrap 事件退役：
+    // 老协议消息必须显式失败（不得回退网络装配），Agent 消费改走 locked-content。
     channel.receive({ type: "bootstrap", requestId: 1 });
+    expect(send).toHaveBeenCalledWith({ type: "failed", requestId: 1, code: "UNAVAILABLE" });
+    channel.receive({ type: "locked-content", requestId: 2 });
     await vi.waitFor(() =>
       expect(send).toHaveBeenCalledWith({
-        type: "bootstrap-ready",
-        requestId: 1,
-        ...bootstraps[0],
+        type: "locked-content-ready",
+        requestId: 2,
+        version: 1,
+        digest: grant.digest,
+        skillMd: "# synthetic controller\n",
       }),
     );
     expect(close).not.toHaveBeenCalled();
