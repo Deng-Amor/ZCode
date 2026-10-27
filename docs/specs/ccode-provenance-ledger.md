@@ -25,7 +25,7 @@
 
 正式状态为 submitted → accepted/rejected，accepted → closed。每次转换 revision 加一；不支持原地修改记录正文，rejected/accepted/closed 的勘误或重提均新建记录并关联 supersedesRecordId，重新验收。重复 close 的原命令幂等返回；新命令 close 已关闭记录拒绝。所有转换先核验当前修订、来源、证据摘要和权限；异常、超时、不可解析、缺少证据均拒绝推进。
 
-权限映射：submit/get 使用既有 `system:ccode-controller:use`；review accept/reject 分别使用既有 `biz:knowledge-base:review:approve` / `biz:knowledge-base:review:reject`，并验证每份证据所属目录的审核权限；close 使用 `system:ccode-controller:publish`；发布沿用现有 publish 权限及目录管理读取检查。读取记录只允许创建者或具有 publish 权限的管理者；不强制不同自然人审核，不擅自增加双人业务规则。
+权限映射（2026-10-24 修订）：review accept/reject 分别使用既有 `biz:knowledge-base:review:approve` / `biz:knowledge-base:review:reject`，并验证每份证据所属目录的审核权限；close 使用 `system:ccode-controller:publish`；发布沿用现有 publish 权限及目录管理读取检查。原 submit/get 映射的 `system:ccode-controller:use` 已随「总控读=全员」拍板退役（`docs/prd/ccode-dataplatform-prd.md` §4.6，authorize/content 对全部登录用户开放）；本模块 submit/get 的权限归属（get 倾向随读开放、submit 倾向 publish 或独立权限）待实施前重新拍板。读取记录只允许创建者或具有 publish 权限的管理者；不强制不同自然人审核，不擅自增加双人业务规则。
 
 验收需要明确判据、验证结果和证据，记录审核者及来源上下文；root-cause 需要复现/对照证据与反证说明，hypothesis 不得通过验收自动升级。代码只能保证验收资料与状态规则，不能通用地证明证据与自然语言因果关系。验收后证据被替换、撤销或失去权限时，关单与发布重新核验并拒绝失配。
 
