@@ -271,7 +271,14 @@ export function createCommandChannelProcessor(
       // 验签（M7-R4 指令信封带服务端签名）：通告/指令/未知类型共用同一安全信封（M7-R7），
       // 管线顺序上先于过期与类型白名单（任务卡 20261022-C4）。
       const signatureValid = await options.verifier.verify(parsed.base);
-      if (!signatureValid) {
+      // 定向投递防护（2026-10-27 与中台对齐）：信封 deviceId 必须与本机注册 ID
+      // 逐字匹配——定向完整性属签名验证链，失败按 INVALID_SIGNATURE 拒绝；
+      // 本机未注册（expectedDeviceId 未注入）时不比对（隔离联调兼容无设备形态）。
+      const deviceMatched =
+        options.expectedDeviceId === undefined ||
+        parsed.base.deviceId === undefined ||
+        parsed.base.deviceId === options.expectedDeviceId;
+      if (!signatureValid || !deviceMatched) {
         if (parsed.kind === "notice") {
           return reject("INVALID_SIGNATURE", {
             auditKind: "notice.rejected",

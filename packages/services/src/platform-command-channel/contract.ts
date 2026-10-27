@@ -152,6 +152,13 @@ export interface CommandChannelProcessorOptions {
   readonly noticeSink: CommandChannelNoticeSink;
   readonly auditSink: CommandChannelAuditSink;
   readonly store: CommandChannelCommandStore;
+  /**
+   * 本机已注册 deviceId（2026-10-27 与中台对齐，D3 定向投递的客户端侧防护）：
+   * 信封验签通过后，其 deviceId（若携带）必须与本值逐字匹配，否则按
+   * INVALID_SIGNATURE 拒绝——定向完整性属签名验证链，不误用其他原因码。
+   * 未注册（undefined）时不比对（隔离联调允许无设备形态的信封）。
+   */
+  readonly expectedDeviceId?: string;
   /** 策略提供者（每次处理现取；policy.update 通告生效后的动态读数）。 */
   readonly getPolicy: () => CommandChannelPolicy;
   readonly scopeLimits?: Partial<CommandChannelScopeLimits>;

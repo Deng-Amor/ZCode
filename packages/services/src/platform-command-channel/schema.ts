@@ -110,6 +110,14 @@ export type CommandChannelTimeOnlyParams = z.infer<
  * commandId/noticeId 在此层均可选（幂等键归属正确性由已知类型分支判定），
  * params 必须是 JSON 对象。未知字段直接失败（trust boundary）。
  */
+// 信封携带的定向 deviceId（2026-10-27 与中台对齐）：服务端签名信封含 deviceId，
+// 基础层接收并在处理核验签后与本机注册 ID 逐字匹配。沿用 device-registration 的
+// 小写 8-4-4-4-12 手写正则而非 z.uuid()——服务端 ID 未固定 UUID version/variant。
+const envelopeDeviceId = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+  .optional();
+
 export const commandChannelEnvelopeBaseSchema = z.strictObject({
   envelopeVersion: z.literal(COMMAND_CHANNEL_ENVELOPE_VERSION),
   type: z.string().min(1),
@@ -119,6 +127,7 @@ export const commandChannelEnvelopeBaseSchema = z.strictObject({
   signature: z.string().min(1),
   commandId: z.uuid().optional(),
   noticeId: z.uuid().optional(),
+  deviceId: envelopeDeviceId,
 });
 export type CommandChannelEnvelopeBase = z.infer<
   typeof commandChannelEnvelopeBaseSchema
@@ -129,6 +138,7 @@ const envelopeCommonFields = {
   issuedAt: z.iso.datetime({ offset: true }),
   expiresAt: z.iso.datetime({ offset: true }),
   signature: z.string().min(1),
+  deviceId: envelopeDeviceId,
 } as const;
 
 export const skillUpdateNoticeEnvelopeSchema = z.strictObject({

@@ -98,7 +98,7 @@ export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePla
         driver = createSkillReflowUploadDriver({ service, queue, uploader });
         return service;
       },
-      createCommandChannel: () => createCommandChannelProcessor({ verifier: { verify: async (envelope) => verifyCommandChannelEnvelopeSignature(envelope, options.commandSignerPublicKeyPem) }, executor: { execute: async (command) => {
+      createCommandChannel: () => createCommandChannelProcessor({ expectedDeviceId: deviceId, verifier: { verify: async (envelope) => verifyCommandChannelEnvelopeSignature(envelope, options.commandSignerPublicKeyPem) }, executor: { execute: async (command) => {
   // run-logs 源给近 31 天宽窗口+大分页；执行体按指令 scope 再过滤（executors.ts 为唯一范围判定，窗口上限 31 天）。
   // chat-logs / skill-usage 如实 NOT_COLLECTED（OQ-12 门控未开/统计存储未落地，stub-sources.ts 注释为凭）。
   if (command.type === "command.pull_run_logs") {
