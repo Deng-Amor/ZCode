@@ -14,6 +14,22 @@ export interface DesktopCcodeAccount {
   getAuthHeaders(): Promise<Record<string, string>>;
 }
 
+/**
+ * 设备身份窄口（D1/D2，2026-10-27）：deviceId 缺省表示尚未注册（poll 轮询不启动，
+ * 注册成功后调用 notifyDeviceIdentityChanged 触发重建）。签名器为 D2 证明头专用。
+ */
+export interface DesktopDeviceIdentityPort {
+  /** 读取当前设备身份；不可用（加密暂缺/身份损坏）返回 undefined 并自行告警。 */
+  get(): Promise<
+    | {
+        readonly deviceId?: string;
+        /** 与 D2 证明头签名器同构（sign + 公钥指纹；指纹供诊断与注册幂等键复用）。 */
+        readonly signer: { sign(input: Buffer): string; spkiSha256Hex(): string };
+      }
+    | undefined
+  >;
+}
+
 export interface DesktopCcodePlatformRuntimeWiringOptions {
   readonly account: DesktopCcodeAccount;
   /** 平台数据目录（队列/账本/缓存/指令存储的唯一父目录）。 */
@@ -35,6 +51,8 @@ export interface DesktopCcodePlatformRuntimeWiringOptions {
   readonly fetchImpl?: typeof fetch;
   /** 连续成功空轮询的最小请求间隔（2026-10-26 与中台对齐，缺省 5000ms；测试可注入小值）。 */
   readonly minEmptyPollIntervalMs?: number;
+  /** 设备身份窄口（D2 证明头）：缺省无设备证明（poll 不启动，等注册完成后 notify 重建）。 */
+  readonly deviceIdentity?: DesktopDeviceIdentityPort;
   /** 状态迁移/dispose 异常的唯一出口；缺省静默。 */
   readonly warn?: (message: string, error: unknown) => void;
   /** 测试注入：替换真组合根（缺省用真工厂装配）。 */
@@ -50,6 +68,8 @@ export interface DesktopCcodePlatformRuntimeWiring {
   fetch: typeof fetch;
   /** 外部错误源上报（spec §6A）：未启用诊断（无 builder）时 no-op；永不 reject。 */
   reportDiagnosticErrorTrigger(reason: "task_failed" | "crash_recovery" | "controller_bootstrap_failed"): void;
+  /** 设备身份变化通知（D1 注册成功后调用）：触发一次 sync 重建并按需启动 poll。 */
+  notifyDeviceIdentityChanged(): void;
   reportTaskStarted(taskId: string, turnId: string): Promise<void>;
   reportTaskTerminal(taskId: string, turnId: string, result: string): Promise<void>;
   /** 幂等：退订账号监听→停 transport→runtime.stop+dispose；永不 reject。 */

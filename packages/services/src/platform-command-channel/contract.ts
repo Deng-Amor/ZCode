@@ -160,10 +160,12 @@ export interface CommandChannelProcessorOptions {
   readonly logger?: ServiceLogger;
 }
 
-/** 幂等存储按登录身份隔离的键（与 audit-telemetry 队列同款口径：tenantId+userId）。 */
+/** 幂等存储按登录身份隔离的键（与 audit-telemetry 队列同款口径：tenantId+userId；
+ * deviceId 可选——D3 设备定向投递时按设备隔离，重装=新 deviceId 从零）。 */
 export interface CommandChannelStoreIdentity {
   readonly tenantId: string;
   readonly userId: string;
+  readonly deviceId?: string;
 }
 
 export interface CommandChannelDiskStoreOptions {

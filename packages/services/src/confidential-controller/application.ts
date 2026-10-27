@@ -26,6 +26,9 @@ export function createControllerApplication(options: {
   sessionStore?: PlatformSessionStore;
   lockedStore?: LockedStorePort;
   updateSource?: ControllerUpdateSource;
+  /** 登录验证成功后的回调（D1 设备注册挂点，2026-10-27）：fire-and-forget，
+   * 异常内化不阻塞登录返回；input 含一次性密码，回调自行保证不落日志。 */
+  onLoginVerified?: (input: PlatformLoginInput, state: { authenticated: boolean; tenantId?: string; userId?: string }) => void;
 }) {
   const stateListeners = new Set<() => void>();
   const channels = new Set<ControllerPrivateChannel>();
@@ -172,6 +175,13 @@ export function createControllerApplication(options: {
       listTenants: (signal?: AbortSignal) => auth.listTenants(signal),
       login: async (input: PlatformLoginInput, signal?: AbortSignal) => {
         const state = await auth.login(input, signal);
+        try {
+          // D1 设备注册挂点（2026-10-27）：fire-and-forget，异常内化不阻塞登录；
+          // input 含一次性密码，回调方自行保证不落日志（注册幂等键稳定，可下次重试）。
+          options.onLoginVerified?.(input, state);
+        } catch {
+          /* 回调故障不影响登录结果。 */
+        }
         await prefetchController();
         void checkForUpdate();
         return state;

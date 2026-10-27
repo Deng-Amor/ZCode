@@ -15,11 +15,17 @@ import { canonicalJsonString } from "./canonical-json.js";
  * 私钥/公钥以 PEM 或 KeyObject 注入；落盘加密（safeStorage）归 Main 装配，本模块不持久化。
  */
 
-const NONCE_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+const REGISTER_NONCE_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+const CHALLENGE_NONCE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
-/** 服务端 nonce 格式护栏：24 字节随机 → 32 字符无填充 base64url。 */
-export function isServerNonce(value: unknown): value is string {
-  return typeof value === "string" && NONCE_PATTERN.test(value);
+/** D1 注册挑战 nonce 护栏：24 字节随机 → 32 字符无填充 base64url。 */
+export function isRegisterNonce(value: unknown): value is string {
+  return typeof value === "string" && REGISTER_NONCE_PATTERN.test(value);
+}
+
+/** D2 挑战 nonce 护栏：32 字节随机 → 43 字符无填充 base64url（与 D1 不同长）。 */
+export function isChallengeNonce(value: unknown): value is string {
+  return typeof value === "string" && CHALLENGE_NONCE_PATTERN.test(value);
 }
 
 /** 安装公钥 SPKI DER 的 SHA-256 小写 hex（与 trust-roots keyId 同口径）。 */

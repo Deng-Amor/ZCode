@@ -50,7 +50,8 @@ export {
   verifyCommandChannelEnvelopeSignature,
 } from "./canonical-json.js";
 export {
-  isServerNonce,
+  isRegisterNonce,
+  isChallengeNonce,
   installKeySpkiSha256Hex,
   pollRequestSha256Hex,
   receiptsRequestSha256Hex,
@@ -63,6 +64,27 @@ export type {
   DeviceChallenge,
   DeviceProofSigner,
 } from "./device-proof.js";
+export {
+  createDeviceRegistrationClient,
+  DeviceRegistrationError,
+} from "./device-registration.js";
+export type {
+  DeviceRegistrationClientOptions,
+  DeviceRegistrationErrorCode,
+  DeviceRegistrationTokenProvider,
+} from "./device-registration.js";
+export {
+  createDeviceChallengeClient,
+  deviceProofHeaders,
+  DeviceChallengeError,
+} from "./device-challenge.js";
+export type {
+  DeviceChallengeClient,
+  DeviceChallengeClientOptions,
+  DeviceChallengeErrorCode,
+  DeviceChallengeTokenProvider,
+  IssuedDeviceChallenge,
+} from "./device-challenge.js";
 export {
   DEFAULT_COMMAND_CHANNEL_RECEIPT_PATH,
   createCommandChannelReceiptUploader,

@@ -263,6 +263,15 @@ sequenceDiagram
   - **D2 两段式挑战（2026-10-26 修订定稿：签名绑定请求内容）**：客户端先领一次性挑战，再对 poll / receipts 请求签名；挑战绑定用户、租户、deviceId 与**请求用途**；服务端验签并**原子消费**后才读指令或收回执；过期/重试一律重新领挑战。**签名字节合同**：输入 = `JCS({schemaVersion:1, challengeId, deviceId, nonce, purpose, requestSha256})` 的 UTF-8 字节（`purpose ∈ "poll" | "receipts"`），Ed25519（设备安装密钥）签名，base64；`requestSha256` 口径——poll = sha256(游标参数原文 UTF-8，无 cursor 参数时对空串计算)，receipts = sha256(实际发送的原始请求体字节)；服务端从收到的请求重算比对。**deviceId wire 格式** = 小写标准 UUID 文本，服务端严格解码为 16 字节设备 ID。跨端冻结向量（含「替换 cursor」「替换回执正文」两个验签失败向量）见客户端 `packages/services/test/platformCommandChannelDeviceChallenge.test.ts`（poll canonical 265 字节 sha256 `117c10d9…`；receipts canonical 269 字节 sha256 `38ba6dbe…`；测试钥 SPKI `MCow…E0o=`）——复用信封签名的同一 JCS 实现，测试钥仅合同夹具。错误码只保留枚举值不返回内部详情；服务端待办：注册/挑战路由、设备定向 outbox、回执归属；完成前生产 poll 保持 503。
   - **D3 设备治理**：指令按 deviceId **定向投递**；同账号允许多台 ACTIVE 设备，初版上限 10 台，达上限明确报错不自动顶替；重装=新密钥+新 deviceId；旧设备由本人或管理员吊销；**登出不吊销设备**，吊销后新请求立即拒绝；**每台设备独立维护指令游标与回执**（客户端侧落地：游标文件与幂等存储按 deviceId 隔离，两台机器不共享、不重复执行同一条用户级指令）。
   - wire 形状（客户端提案，待中台确认）：领挑战 `POST system/ccode-commands/device/challenge`（Bearer+tenant-id+`x-ccode-device-id`，体 `{"purpose":"poll"|"receipts"}`）；poll/receipts 追加头 `x-ccode-device-id` / `x-ccode-challenge-id` / `x-ccode-device-signature`；固定错误码建议 `CHALLENGE_REQUIRED / CHALLENGE_EXPIRED / DEVICE_UNKNOWN / DEVICE_REVOKED / DEVICE_LIMIT_REACHED`（呼应「错误码不被隐私壳抹平」）。
+
+**〔2026-10-27 实测合同回填（服务端 a5cd0080ca 实读，客户端按此接线）〕**：
+
+- **D1 注册三端点**（前缀 `/admin-api/system/ccode-commands/device/`，请求体字段数严格相等，多余即拒）：①`registration-challenge`：体 `{publicKeySpkiDer(标准 base64，解码恰 44 字节规范化 Ed25519 SPKI DER，无 PEM/无 sha256 上送), idempotencyKey(非空白≤128)}` → `{challengeId, nonce(24 字节随机→32 字符无填充 base64url)}`（挑战 5 分钟过期）；②`reauth`：体 `{challengeId, password(明文，仅此一次经 HTTPS 上送)}` → `{"code":0}`；③`register`：体 `{challengeId, nonce(原样回传), signature(标准 base64)}` → `{deviceId(小写 UUID)}`。**三步必须同一枚 access token**（挑战与 token 行绑定）；幂等=同 idempotencyKey+同公钥返回同一 deviceId；每用户 ACTIVE 上限 10 台→`409 DEVICE_LIMIT_REACHED`；门 `ccode.commands.registration-wire-enabled`（默认关→503 DEVICE_PROOF_UNAVAILABLE）。客户端 idempotencyKey 取安装公钥 spkiSha256（天然幂等重试）。
+- **D2 挑战**：`POST system/ccode-commands/device/challenge` 体恰 `{purpose}`；响应 `{challengeId, nonce(32 字节→43 字符无填充 base64url，与 D1 不同长), expiresAt(epoch 毫秒数字，+60s)}`；挑战原子消费于独立事务（验签过即作废）。
+- **poll 查询串**：整体匹配 `cursor=(0|[1-9][0-9]*)` 或完全无参（禁前导零/多余参数）→422 INVALID_CURSOR；无参时 requestSha256=空串哈希。
+- **receipts**：请求体按**原始字节**验签（1..65536），项内 `commandId`/`noticeId` 二选一（同现即 422）。
+- **错误体形态**：`{"error":"<CODE>"}`（非 CommonResult 包装；仅 filter 层 401 是 `{"code":401,...}`）；门 `ccode.commands.device-wire-enabled` 默认关。
+- **D3 客户端落地**：游标文件与命令幂等存储按 deviceId 隔离（`cursor-{deviceId}.txt`、store identity 增 deviceId）；无 deviceId 不启动 poll 轮询（避免对关闭门无限退避）。
 - **钥匙卫生（拍板）**：跨端 281 字节向量及其测试钥**仅作合同测试夹具**，不作生产密钥来源；生产 verify-key 必须为独立生成保管的正式信任根钥，公钥按 M6-R4 台账登记后再启用；后端 `enqueue` 调用方传私钥的形态仅限隔离测试。
 
 ## 五、非功能要求

@@ -8,7 +8,7 @@ import {
 import { createAuditTelemetryCollector, createAuditTelemetryDiskQueue, createAuditTelemetryHttpUploader, createAuditTelemetryPolicyGate, createAuditTelemetryUploadScheduler, createDiagnosticBundleTrigger, DEFAULT_AUDIT_TELEMETRY_POLICY, type AuditTelemetryAttribution, type AuditTelemetryRawEvent } from "@zcode/services/audit-telemetry";
 import { createExpertSkillCacheStore } from "@zcode/services/expert-skills";
 import { createSkillReflowHttpUploader, createSkillReflowLedgerFile, createSkillReflowQueueFile, createSkillReflowRootsProvider, createSkillReflowUploadDriver, createSkillReflowUploadService, type SkillReflowPlatform } from "@zcode/services/skill-reflow-upload";
-import { createCommandChannelDiskStore, createCommandChannelProcessor, createCommandChannelReceiptUploader, createLongPollTransport, createNotCollectedSource, createPullChatLogsExecutor, createPullRunLogsExecutor, createPullSkillUsageStatsExecutor, createRunLogsSource, verifyCommandChannelEnvelopeSignature, DEFAULT_COMMAND_CHANNEL_POLICY } from "@zcode/services/platform-command-channel";
+import { createCommandChannelDiskStore, createCommandChannelProcessor, createCommandChannelReceiptUploader, createDeviceChallengeClient, createLongPollTransport, createNotCollectedSource, createPullChatLogsExecutor, createPullRunLogsExecutor, createPullSkillUsageStatsExecutor, createRunLogsSource, deviceProofHeaders, pollRequestSha256Hex, receiptsRequestSha256Hex, verifyCommandChannelEnvelopeSignature, DEFAULT_COMMAND_CHANNEL_POLICY } from "@zcode/services/platform-command-channel";
 import type { DesktopCcodePlatformRuntimeWiring, DesktopCcodePlatformRuntimeWiringOptions } from "./contract.js";
 
 export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePlatformRuntimeWiringOptions): DesktopCcodePlatformRuntimeWiring {
@@ -32,6 +32,10 @@ export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePla
   };
   const build = async (identity: { tenantId: string; userId: string }) => {
     const expectedIdentity = JSON.stringify([identity.tenantId, identity.userId]);
+    // 设备身份前置加载（D2/D3）：无 deviceId 时 poll/receipts 链路不建（见 runtime 创建后），
+    // 幂等存储 identity 带 deviceId 隔离（重装=新 deviceId 从零，两台机器不重复执行）。
+    const device = await options.deviceIdentity?.get().catch(() => undefined);
+    const deviceId = device?.deviceId;
     const tokenProvider = { getHeaders: async () => {
       const before = await options.account.getState();
       if (JSON.stringify([before.tenantId, before.userId]) !== expectedIdentity || !before.authenticated) throw new Error("AUTH_REQUIRED");
@@ -103,22 +107,57 @@ export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePla
   }
   if (command.type === "command.pull_chat_logs") return createPullChatLogsExecutor({ source: createNotCollectedSource() }).execute(command);
   return createPullSkillUsageStatsExecutor({ source: createNotCollectedSource() }).execute(command);
-} }, noticeSink: { dispatch: async () => {} }, auditSink: { record: async () => {} }, store: createCommandChannelDiskStore({ storageDirectory: options.storageDirectory, identity }), getPolicy: () => DEFAULT_COMMAND_CHANNEL_POLICY, now: () => new Date() }),
+} }, noticeSink: { dispatch: async () => {} }, auditSink: { record: async () => {} }, store: createCommandChannelDiskStore({ storageDirectory: options.storageDirectory, identity: { ...identity, ...(deviceId ? { deviceId } : {}) } }), getPolicy: () => DEFAULT_COMMAND_CHANNEL_POLICY, now: () => new Date() }),
       // 长轮询 start 返回运行至 stop 的 Promise；等待它会卡住登录启动与身份切换。
       startTransport: () => { void transport?.start().catch((error) => warn("CCode command channel poll failed", error)); },
       stopTransport: async () => transport?.stop(),
     };
     runtime = options.createRuntime?.(deps) ?? createCcodePlatformRuntime({ storageDirectory: options.storageDirectory }, deps);
     const processEnvelope = (envelope: unknown) => runtime!.processCommand(envelope);
+    // 无 deviceId（未注册/身份不可用）时不建 transport：poll 不启动，receipts 无来源，
+    // 避免对关闭中的服务端门无限退避；注册成功后 notifyDeviceIdentityChanged 强制重建。
+    if (!deviceId || !device) {
+      transport = undefined;
+      return runtime;
+    }
+    // D2 证明头 fetch 包装：每次请求先领挑战→签名本次请求内容→注入三头；
+    // 401 挑战类失败（过期/重放）领新挑战重试一次。authFetch 本体不动（skill-reflow/wiring.fetch 不受影响）。
+    const challengeClient = createDeviceChallengeClient({ baseUrl: options.apiBaseUrl, tokenProvider: { getHeaders: async () => ({}) }, fetchImpl: authFetch });
+    const proofHeaders = async (purpose: "poll" | "receipts", requestSha256Hex: string) => {
+      const challenge = await challengeClient.fetch({ purpose, deviceId });
+      return deviceProofHeaders({ challenge, deviceId, purpose, requestSha256Hex, signer: device.signer });
+    };
+    const deviceProofFetch = (purpose: "poll" | "receipts", requestSha256Of: (input: RequestInfo | URL, init?: RequestInit) => string): typeof fetch =>
+      async (input, init) => {
+        const attempt = await (async () => {
+          const headers = new Headers(init?.headers);
+          for (const [name, value] of Object.entries(await proofHeaders(purpose, requestSha256Of(input, init)))) headers.set(name, value);
+          return authFetch(input, { ...init, headers });
+        })();
+        if (attempt.status !== 401) return attempt;
+        // 挑战可能在校验前过期（领与用之间）：领新挑战重试一次。
+        const headers = new Headers(init?.headers);
+        for (const [name, value] of Object.entries(await proofHeaders(purpose, requestSha256Of(input, init)))) headers.set(name, value);
+        return authFetch(input, { ...init, headers });
+      };
+    const pollProofFetch: typeof fetch = (input, init) => {
+      // poll 的 requestSha256=游标参数原文（URL 里无 cursor 即空串）。
+      const cursor = new URL(String(input)).searchParams.get("cursor") ?? undefined;
+      return deviceProofFetch("poll", () => pollRequestSha256Hex(cursor))(input, init);
+    };
+    const receiptsProofFetch: typeof fetch = (input, init) =>
+      deviceProofFetch("receipts", (_input, innerInit) =>
+        receiptsRequestSha256Hex(Buffer.from(String(innerInit?.body ?? ""), "utf8")))(input, init);
     // 回执上行（2026-10-25 与中台对齐）：缓冲 + 逐批 POST system/ccode-commands/receipts；
     // 失败保留重发（按 commandId/noticeId 幂等，中台侧消化重复），缓冲封顶丢最旧防无界增长。
+    // 游标与幂等存储按 deviceId 隔离（D3）：重装=新 deviceId 自然从零，两台机器不重复执行。
     const cursorDir = join(options.storageDirectory, "command-channel");
-    const cursorFile = join(cursorDir, "cursor.txt");
+    const cursorFile = join(cursorDir, `cursor-${deviceId}.txt`);
     const priorCursor = await readFile(cursorFile, "utf8").then((text) => {
       const trimmed = text.trim();
       return trimmed.length > 0 && trimmed.length <= 4096 ? trimmed : undefined;
     }).catch(() => undefined);
-    const receiptUploader = createCommandChannelReceiptUploader({ baseUrl: options.apiBaseUrl, tokenProvider, fetchImpl: authFetch });
+    const receiptUploader = createCommandChannelReceiptUploader({ baseUrl: options.apiBaseUrl, tokenProvider, fetchImpl: receiptsProofFetch });
     const pendingReceipts: string[] = [];
     const maxPendingReceipts = 1000;
     let flushingReceipts = false;
@@ -140,7 +179,7 @@ export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePla
     };
     const raw = createLongPollTransport({
       endpoint: new URL("system/ccode-commands/poll", options.apiBaseUrl).toString(),
-      fetchImpl: authFetch,
+      fetchImpl: pollProofFetch,
       processEnvelope,
       cursor: priorCursor,
       minEmptyPollIntervalMs: options.minEmptyPollIntervalMs,
@@ -241,6 +280,13 @@ export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePla
         collectorSink({ kind: "turn", result, subjectRef: { kind: "session", id: taskId } });
         await collector?.flush();
       } catch (error) { warn("CCode audit task terminal attribution unavailable", error); }
+    },
+    /** 设备身份变化（D1 注册成功/身份恢复）：强制重建以挂接或摘除 poll/receipts 证明头链路。 */
+    notifyDeviceIdentityChanged: () => {
+      transition = transition.then(async () => {
+        if (disposed || !runtime) return;
+        await teardown();
+      }).then(sync);
     },
     dispose: async () => { if (disposed) return; disposed = true; unsubscribe(); transition = transition.then(async () => { try { await teardown(); } catch (error) { warn("CCode platform runtime dispose failed", error); } }); await transition; },
   };

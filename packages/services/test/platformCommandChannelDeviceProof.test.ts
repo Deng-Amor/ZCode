@@ -4,7 +4,8 @@ import {
   deviceChallengeSignatureInput,
   deviceRegisterSignatureInput,
   installKeySpkiSha256Hex,
-  isServerNonce,
+  isRegisterNonce,
+  isChallengeNonce,
   pollRequestSha256Hex,
   receiptsRequestSha256Hex,
 } from "../src/platform-command-channel/device-proof.js";
@@ -98,12 +99,14 @@ describe("device-proof 冻结向量一致性（D1/D2 定稿合同）", () => {
 });
 
 describe("device-proof wire 护栏", () => {
-  it("nonce 格式：32 字符无填充 base64url 通过，其余拒绝", () => {
-    expect(isServerNonce("qRsT4uVwXyZ0123456789abcdefABCDE")).toBe(true);
-    expect(isServerNonce("qRsT4uVwXyZ0123456789abcdefABCDEF")).toBe(false); // 33 字符
-    expect(isServerNonce("qRsT4uVwXyZ0123456789abcdefABCD=")).toBe(false); // 带填充
-    expect(isServerNonce("qRsT4uVwXyZ0123456789abcdefABCD+")).toBe(false); // 非 url 字母表
-    expect(isServerNonce(123)).toBe(false);
+  it("nonce 两档：D1 注册 32 字符 / D2 挑战 43 字符，其余拒绝", () => {
+    expect(isRegisterNonce("qRsT4uVwXyZ0123456789abcdefABCDE")).toBe(true); // 24 字节→32 字符
+    expect(isChallengeNonce("qRsT4uVwXyZ0123456789abcdefghijklmnopqrstuv")).toBe(true); // 32 字节→43 字符
+    expect(isRegisterNonce("qRsT4uVwXyZ0123456789abcdefghijklmnopqrstuv")).toBe(false); // D2 长度非 D1
+    expect(isChallengeNonce("qRsT4uVwXyZ0123456789abcdefABCDE")).toBe(false); // D1 长度非 D2
+    expect(isRegisterNonce("qRsT4uVwXyZ0123456789abcdefABCD=")).toBe(false); // 带填充
+    expect(isChallengeNonce("qRsT4uVwXyZ0123456789abcdefghijklmnopq+stuv")).toBe(false); // 非 url 字母表
+    expect(isRegisterNonce(123)).toBe(false);
   });
 
   it("公钥指纹口径：非 Ed25519 公钥拒绝", () => {

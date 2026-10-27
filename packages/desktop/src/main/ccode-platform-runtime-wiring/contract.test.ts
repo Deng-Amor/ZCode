@@ -20,15 +20,16 @@ describe("ccode-platform-runtime-wiring contract", () => {
     expect(Object.keys(account).sort()).toEqual(["getAuthHeaders", "getState", "onStateChanged"]);
   });
 
-  it("wiring surface is fetch + dispose + diagnostic error report", () => {
+  it("wiring surface is fetch + dispose + diagnostic error report + device identity notify", () => {
     const wiring: DesktopCcodePlatformRuntimeWiring = {
       fetch: async () => new Response(""),
       dispose: async () => undefined,
       reportDiagnosticErrorTrigger: () => undefined,
+      notifyDeviceIdentityChanged: () => undefined,
       reportTaskStarted: async () => undefined,
       reportTaskTerminal: async () => undefined,
     };
-    expect(Object.keys(wiring).sort()).toEqual(["dispose", "fetch", "reportDiagnosticErrorTrigger", "reportTaskStarted", "reportTaskTerminal"]);
+    expect(Object.keys(wiring).sort()).toEqual(["dispose", "fetch", "notifyDeviceIdentityChanged", "reportDiagnosticErrorTrigger", "reportTaskStarted", "reportTaskTerminal"]);
   });
 
   it("options carry all injected paths and knobs (no electron imports reachable)", () => {

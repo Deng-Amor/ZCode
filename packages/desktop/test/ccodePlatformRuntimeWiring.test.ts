@@ -3,9 +3,21 @@ import { generateKeyPairSync, sign as ed25519Sign } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalJsonString } from "@zcode/services/platform-command-channel";
+import { canonicalJsonString, createDeviceProofSigner } from "@zcode/services/platform-command-channel";
 import { createDesktopCcodePlatformRuntimeWiring } from "../src/main/ccode-platform-runtime-wiring/index.js";
 import { testPullRunLogsEnvelope } from "../../services/test/platformCommandChannelFixtures.js";
+
+const DEVICE_ID = "6f14c2d9-8b3e-4a57-9c21-d0e5f7a8b123";
+const CHALLENGE_NONCE = "qRsT4uVwXyZ0123456789abcdefghijklmnopqrstuv"; // 32B→43 字符
+const CHALLENGE_ID = "3f1c2b8a-9d4e-4f67-a5b1-c8e2f7a9d012";
+const DEVICE_SIGNER = createDeviceProofSigner(
+  generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+);
+/** D2 证明头依赖 /device/challenge 领挑战——共用 stub。 */
+function challengeOrPassthrough(url: string): Response | undefined {
+  if (!url.includes("/device/challenge")) return undefined;
+  return new Response(JSON.stringify({ challengeId: CHALLENGE_ID, nonce: CHALLENGE_NONCE, expiresAt: Date.now() + 60_000 }), { status: 200, headers: { "content-type": "application/json" } });
+}
 
 function setup() {
   let authenticated = false;
@@ -285,6 +297,8 @@ describe("desktop CCode platform runtime wiring", () => {
       let pollCount = 0;
       const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
+        const challenge = challengeOrPassthrough(url);
+        if (challenge) return challenge;
         if (url.includes("/poll")) {
           pollUrls.push(url);
           pollCount += 1;
@@ -319,6 +333,7 @@ describe("desktop CCode platform runtime wiring", () => {
         commandSignerPublicKeyPem: "key", homeDirectory: "home", workingDirectory: "work",
         fetchImpl: fetchImpl as unknown as typeof fetch,
         minEmptyPollIntervalMs: 10,
+        deviceIdentity: { get: async () => ({ deviceId: DEVICE_ID, signer: DEVICE_SIGNER }) },
         createRuntime: (deps) => { runtimeDeps = deps as typeof runtimeDeps; return runtime as never; },
       });
       await new Promise((resolve) => setTimeout(resolve, 80));
@@ -330,11 +345,13 @@ describe("desktop CCode platform runtime wiring", () => {
         schemaVersion: 1,
         receipts: [{ status: "executed", commandId: "cmd-1", resultRef: "ref-1" }],
       });
-      // 游标持久化：落盘后跨 wiring 重建作为初始 cursor 回传。
-      await expect(readFile(join(storageRoot, "command-channel", "cursor.txt"), "utf8")).resolves.toBe("cursor-1");
+      // 游标持久化（D3 按设备隔离）：落盘后跨 wiring 重建作为初始 cursor 回传。
+      await expect(readFile(join(storageRoot, "command-channel", `cursor-${DEVICE_ID}.txt`), "utf8")).resolves.toBe("cursor-1");
       const secondPollUrls: string[] = [];
       const fetch2 = vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
+        const challenge = challengeOrPassthrough(url);
+        if (challenge) return challenge;
         if (url.includes("/poll")) {
           secondPollUrls.push(url);
           await new Promise((resolve) => setTimeout(resolve, 10));
@@ -348,6 +365,7 @@ describe("desktop CCode platform runtime wiring", () => {
         commandSignerPublicKeyPem: "key", homeDirectory: "home", workingDirectory: "work",
         fetchImpl: fetch2 as unknown as typeof fetch,
         minEmptyPollIntervalMs: 10,
+        deviceIdentity: { get: async () => ({ deviceId: DEVICE_ID, signer: DEVICE_SIGNER }) },
         createRuntime: (deps) => { deps2 = deps as typeof deps2; return { ...runtime, start: vi.fn(async () => { await deps2?.startTransport(); }), stop: vi.fn(async () => { await deps2?.stopTransport(); }) } as never; },
       });
       await new Promise((resolve) => setTimeout(resolve, 60));

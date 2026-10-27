@@ -122,6 +122,8 @@ import { createAppLaunchGate } from "./appLaunchGate.js";
 import { createAppLaunchCoordinator } from "./appLaunchCoordinator.js";
 import { createAppTelemetryRuntime } from "./appTelemetryRuntime.js";
 import { createDesktopCcodePlatformRuntimeWiring } from "./ccode-platform-runtime-wiring/index.js";
+import { createDesktopDeviceIdentityStore } from "./ccode-platform-runtime-wiring/deviceIdentity.js";
+import { createDeviceRegistrationClient } from "@zcode/services/platform-command-channel";
 import { createRendererActionTraceBroker } from "./rendererActionTraceBroker.js";
 import { createRendererActionTraceExporter } from "./rendererActionTraceExporter.js";
 import { registerRendererActionTraceIpc } from "./rendererActionTraceIpc.js";
@@ -689,7 +691,49 @@ const ccodeControllerLockedStore = createControllerLockedStore({
   },
   trust: ccodeControllerTrust,
 });
+// 设备身份（D1/D2 设备证明，2026-10-27）：安装密钥 safeStorage 加密落盘，
+// deviceId 注册成功后写入；密码只在登录验证成功回调内一次性上送 reauth（不落日志）。
+const ccodeDeviceIdentityStore = createDesktopDeviceIdentityStore({
+  directory: join(app.getPath("userData"), "ccode-platform", "device"),
+  encryption: {
+    isAvailable: async () => {
+      await app.whenReady();
+      return (
+        safeStorage.isEncryptionAvailable() &&
+        (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text")
+      );
+    },
+    encrypt: async (plaintext) => new Uint8Array(safeStorage.encryptString(plaintext)),
+    decrypt: async (ciphertext) => safeStorage.decryptString(Buffer.from(ciphertext)),
+  },
+});
 const ccodeControllerApplication = createControllerApplication({
+  onLoginVerified: (input) => {
+    // D1 三步注册：challenge→reauth(密码仅此一次经 HTTPS 上送，不落日志)→register；
+    // 幂等键=安装公钥指纹（稳定，失败下次登录自动重试）；成功后通知 wiring 挂接 poll 证明头。
+    void (async () => {
+      try {
+        const identity = await ccodeDeviceIdentityStore.loadOrCreate();
+        if (identity.deviceId) return;
+        const registration = createDeviceRegistrationClient({
+          baseUrl: ccodeApiBaseUrl,
+          tokenProvider: { getHeaders: () => ccodeControllerApplication.account.getAuthHeaders() },
+        });
+        const { deviceId } = await registration.register({
+          password: input.password,
+          idempotencyKey: identity.signer.spkiSha256Hex(),
+          signer: identity.signer,
+          publicKeySpkiDerBase64: identity.publicKeySpkiDerBase64,
+        });
+        await ccodeDeviceIdentityStore.setDeviceId(deviceId);
+        ccodePlatform.notifyDeviceIdentityChanged();
+        logger.info("[ccode-device] registered device for command channel");
+      } catch (error) {
+        // 注册失败不阻塞登录（幂等重试）；只留固定码/消息，不落任何敏感内容。
+        logger.warn(`[ccode-device] registration deferred: ${error instanceof Error ? error.message : "unknown"}`);
+      }
+    })();
+  },
   sessionStore: createEncryptedPlatformSessionStore({
     filePath: join(app.getPath("userData"), "ccode-account", "session.enc"),
     encryption: {
@@ -708,7 +752,7 @@ const ccodeControllerApplication = createControllerApplication({
   trusts: [ccodeControllerTrust],
   lockedStore: ccodeControllerLockedStore,
 });
-const ccodePlatform = createDesktopCcodePlatformRuntimeWiring({ account: ccodeControllerApplication.account, storageDirectory: join(app.getPath("userData"), "ccode-platform"), apiBaseUrl: ccodeApiBaseUrl, ccodeRelease: readBuildMetadata()?.productVersion ?? ZCODE_VERSION, instanceId: ensureDesktopDeviceMidSync(), getControllerAttribution: async () => { const { version, digest } = await ccodeControllerLockedStore.load(); return { version, digest }; }, commandSignerPublicKeyPem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA4Fice+HrcSUzJg9NCLgKtvjYFwvV1ldQwDfBOETEPMA=\n-----END PUBLIC KEY-----\n", homeDirectory: app.getPath("home"), workingDirectory: process.cwd(), diagnosticArchiveBuilder: createFeedbackDiagnosticBundleBuilder({ outputRootDir: join(app.getPath("userData"), "ccode-diagnostics") }) });
+const ccodePlatform = createDesktopCcodePlatformRuntimeWiring({ account: ccodeControllerApplication.account, storageDirectory: join(app.getPath("userData"), "ccode-platform"), apiBaseUrl: ccodeApiBaseUrl, ccodeRelease: readBuildMetadata()?.productVersion ?? ZCODE_VERSION, instanceId: ensureDesktopDeviceMidSync(), getControllerAttribution: async () => { const { version, digest } = await ccodeControllerLockedStore.load(); return { version, digest }; }, commandSignerPublicKeyPem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA4Fice+HrcSUzJg9NCLgKtvjYFwvV1ldQwDfBOETEPMA=\n-----END PUBLIC KEY-----\n", homeDirectory: app.getPath("home"), workingDirectory: process.cwd(), diagnosticArchiveBuilder: createFeedbackDiagnosticBundleBuilder({ outputRootDir: join(app.getPath("userData"), "ccode-diagnostics") }), deviceIdentity: { get: async () => { try { return await ccodeDeviceIdentityStore.loadOrCreate(); } catch { return undefined; } } } });
 // 进程崩溃恢复（spec §6A 错误源②）：子进程非受控退出即视为崩溃恢复信号上报诊断触发器；
 // clean-exit/killed 为受控终止不上报（判据对齐 desktopCrashCapture.resolveProcessGoneLogLevel）。
 app.on("child-process-gone", (_event, details) => {
