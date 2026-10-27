@@ -258,7 +258,11 @@ sequenceDiagram
 **〔2026-10-26 与中台对齐〕空轮询节奏、设备证明合同与钥匙卫生**：
 
 - **空轮询节奏（已实现客户端侧，提交随下版发布）**：服务端空结果最长 hold ~5s，提前返回时客户端按「请求起点间隔 ≥ `minEmptyPollIntervalMs`（缺省 5000ms）」自限，服务端已 hold 的时长可抵扣；带回信封的轮询不限制。生产 poll 的 503 门保持到设备证明联合验收通过，不开 wire-enabled 绕过。
-- **设备证明合同（中台最小方案提案，客户端侧待联合评审后实施）**：① 客户端本地生成 Ed25519 安装密钥（safeStorage 保护落盘）；② 首次注册走 `POST system/ccode-commands/device/register`：账号 Bearer + tenant-id 头 + 安装公钥，且以「同账号密码重验」背书——重验机制待定（**OQ-D1**：倾向注册窗口内重走密码登录换取一次性注册凭证，不回传密码原文）；③ 服务端按租户+用户维度分配 deviceId（多设备并存，吊销/换机/上限规则**OQ-D3**）；④ 后续 poll/receipts 携带 deviceId，服务端下发一次性挑战，客户端安装私钥 Ed25519 签名，服务端验签+防重放（挑战传递形态（请求头两段式 vs 先取挑战再签名）**OQ-D2**，nonce 一次性+时间窗）；⑤ S11 四断言在隔离测试环境用测试租户+测试钥对执行。
+- **设备证明合同（2026-10-26 D1-D3 定稿，客户端按此实施）**：
+  - **D1 注册**：设备注册前先领取短时一次性**注册挑战**；密码仅经 HTTPS 交现有账号认证重验（客户端在登录流程内持密码完成，不落盘、不写入设备登记/签名内容/日志）；注册凭证绑定用户+租户+新公钥+注册挑战，消费即失效。服务端前置依赖（其自查项）：须先处理「持有高权限 Bearer 可重置密码」路径，否则不得声称仅盗 Bearer 无法注册设备。
+  - **D2 两段式挑战（签名字节已冻结）**：客户端先领一次性挑战，再对 poll / receipts 请求签名；挑战绑定用户、租户、deviceId 与**请求用途**；服务端验签并**原子消费**后才读指令或收回执；过期/重试一律重新领挑战。**签名字节合同**：输入 = `JCS({challengeId, deviceId, nonce, purpose})` 的 UTF-8 字节（`purpose ∈ "poll" | "receipts"`），Ed25519（设备安装密钥）签名，base64；跨端冻结向量见客户端 `packages/services/test/platformCommandChannelDeviceChallenge.test.ts`（142 字节 canonical、sha256 `f92d400e…`、测试钥 SPKI `MCow…Eqs=`）——复用信封签名的同一 JCS 实现，测试钥仅合同夹具。
+  - **D3 设备治理**：指令按 deviceId **定向投递**；同账号允许多台 ACTIVE 设备，初版上限 10 台，达上限明确报错不自动顶替；重装=新密钥+新 deviceId；旧设备由本人或管理员吊销；**登出不吊销设备**，吊销后新请求立即拒绝；**每台设备独立维护指令游标与回执**（客户端侧落地：游标文件与幂等存储按 deviceId 隔离，两台机器不共享、不重复执行同一条用户级指令）。
+  - wire 形状（客户端提案，待中台确认）：领挑战 `POST system/ccode-commands/device/challenge`（Bearer+tenant-id+`x-ccode-device-id`，体 `{"purpose":"poll"|"receipts"}`）；poll/receipts 追加头 `x-ccode-device-id` / `x-ccode-challenge-id` / `x-ccode-device-signature`；固定错误码建议 `CHALLENGE_REQUIRED / CHALLENGE_EXPIRED / DEVICE_UNKNOWN / DEVICE_REVOKED / DEVICE_LIMIT_REACHED`（呼应「错误码不被隐私壳抹平」）。
 - **钥匙卫生（拍板）**：跨端 281 字节向量及其测试钥**仅作合同测试夹具**，不作生产密钥来源；生产 verify-key 必须为独立生成保管的正式信任根钥，公钥按 M6-R4 台账登记后再启用；后端 `enqueue` 调用方传私钥的形态仅限隔离测试。
 
 ## 五、非功能要求
