@@ -2,7 +2,7 @@
   "name": "zcode",
   "version": "3.16.2",
   "ccodeRelease": {
-    "version": "0.0.10",
+    "version": "0.0.11",
     "channel": "preview"
   },
   "private": true,
