@@ -143,6 +143,7 @@ export function createDesktopCcodePlatformRuntimeWiring(options: DesktopCcodePla
       fetchImpl: authFetch,
       processEnvelope,
       cursor: priorCursor,
+      minEmptyPollIntervalMs: options.minEmptyPollIntervalMs,
       onPollSuccess: async (cursor) => {
         // 游标持久化：写失败不阻断轮询（最坏重复下发，靠信封幂等键消化）；异步落盘。
         if (cursor === undefined) return;

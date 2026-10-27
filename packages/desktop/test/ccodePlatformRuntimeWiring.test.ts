@@ -318,6 +318,7 @@ describe("desktop CCode platform runtime wiring", () => {
         account, storageDirectory: storageRoot, apiBaseUrl: "https://example.test/admin-api/",
         commandSignerPublicKeyPem: "key", homeDirectory: "home", workingDirectory: "work",
         fetchImpl: fetchImpl as unknown as typeof fetch,
+        minEmptyPollIntervalMs: 10,
         createRuntime: (deps) => { runtimeDeps = deps as typeof runtimeDeps; return runtime as never; },
       });
       await new Promise((resolve) => setTimeout(resolve, 80));
@@ -346,6 +347,7 @@ describe("desktop CCode platform runtime wiring", () => {
         account, storageDirectory: storageRoot, apiBaseUrl: "https://example.test/admin-api/",
         commandSignerPublicKeyPem: "key", homeDirectory: "home", workingDirectory: "work",
         fetchImpl: fetch2 as unknown as typeof fetch,
+        minEmptyPollIntervalMs: 10,
         createRuntime: (deps) => { deps2 = deps as typeof deps2; return { ...runtime, start: vi.fn(async () => { await deps2?.startTransport(); }), stop: vi.fn(async () => { await deps2?.stopTransport(); }) } as never; },
       });
       await new Promise((resolve) => setTimeout(resolve, 60));

@@ -33,6 +33,8 @@ export interface DesktopCcodePlatformRuntimeWiringOptions {
   /** skill 回流扫描工作区根。 */
   readonly workingDirectory: string;
   readonly fetchImpl?: typeof fetch;
+  /** 连续成功空轮询的最小请求间隔（2026-10-26 与中台对齐，缺省 5000ms；测试可注入小值）。 */
+  readonly minEmptyPollIntervalMs?: number;
   /** 状态迁移/dispose 异常的唯一出口；缺省静默。 */
   readonly warn?: (message: string, error: unknown) => void;
   /** 测试注入：替换真组合根（缺省用真工厂装配）。 */
