@@ -2,7 +2,7 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createControllerApplication } from "../src/confidential-controller/application.js";
 
-function fixture(options: { grantVersion?: number; currentVersion?: number } = {}) {
+function fixture(options: { grantVersion?: number; currentVersion?: number; empty?: boolean } = {}) {
   const grantVersion = options.grantVersion ?? 1;
   const currentVersion = options.currentVersion ?? 1;
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -30,7 +30,7 @@ function fixture(options: { grantVersion?: number; currentVersion?: number } = {
     return reply({ userId: "2", accessToken: "access", refreshToken: "refresh", expiresTime: Date.now() + 60_000 });
   }));
   const loaded = { version: currentVersion, digest: grant.digest, skillMd: "# locked\n", files: [{ path: "SKILL.md", bytes: new Uint8Array(content) }] } as const;
-  const store = { install: vi.fn(async () => {}), status: vi.fn(async () => ({ state: "ready", current: { version: currentVersion } })), load: vi.fn(async () => loaded) };
+  const store = { install: vi.fn(async () => {}), status: vi.fn(async () => (options.empty ? { state: "empty" } : { state: "ready", current: { version: currentVersion } })), load: vi.fn(async () => loaded) };
   const app = createControllerApplication({ apiBaseUrl: "https://login.invalid/api/", trusts: [trust], lockedStore: store, sessionStore: {
     load: async () => ({ version: 1, apiBaseUrl: "https://login.invalid/api/", tenantId: "1", userId: "2", refreshToken: "refresh" }),
     save: async () => {}, clear: async () => {},
@@ -39,8 +39,9 @@ function fixture(options: { grantVersion?: number; currentVersion?: number } = {
 }
 
 describe("confidential controller locked store", () => {
-  it("installs the verified bundle after assembly", async () => {
-    const { app, store } = fixture();
+  it("installs the verified bundle after first assembly on an empty store", async () => {
+    // §5.5 装配本地优先：已有副本的 getBootstrap 走本地路径，install 只发生在首装网络装配。
+    const { app, store } = fixture({ empty: true });
     await app.getBootstrap();
     expect(store.install).toHaveBeenCalledWith(expect.objectContaining({ version: 1 }));
   });
@@ -58,12 +59,14 @@ describe("confidential controller locked store", () => {
 
     await app.account.login({ tenantId: "1", username: "tester", password: "password" });
     await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) => (url as URL).pathname.endsWith("/authorize"))).toBe(true));
-    await vi.waitFor(() => expect(fetcher.mock.calls.filter(([url]) => (url as URL).pathname.endsWith("/content")).length).toBe(1));
-    expect(store.install).toHaveBeenCalledOnce();
+    // §5.5 装配本地优先：本地已有副本时登录只做更新检查，授权版本不新则不下载、不重复落地。
+    expect(fetcher.mock.calls.filter(([url]) => (url as URL).pathname.endsWith("/content"))).toHaveLength(0);
+    expect(store.install).not.toHaveBeenCalled();
   });
 
   it("keeps locked content available after logout", async () => {
-    const { app, store, loaded } = fixture();
+    // 先经空存储首装落地，再验证登出不作废本地锁定副本。
+    const { app, store, loaded } = fixture({ empty: true });
     await app.getBootstrap();
     await app.account.logout();
     expect(store.install).toHaveBeenCalledOnce();

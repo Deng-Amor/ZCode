@@ -56,6 +56,7 @@ export function createControllerApplication(options: {
   let generation = new AbortController();
   let bootstrap: Promise<ControllerBootstrap> | undefined;
   let updateCheck: Promise<void> | undefined;
+  let ensureAttempt: Promise<void> | undefined;
   const checkForUpdate = async () => {
     if (!updateSource || !options.lockedStore || !trust || updateCheck) return;
     updateCheck = (async () => {
@@ -106,13 +107,50 @@ export function createControllerApplication(options: {
       throw new ConfidentialControllerError("INVALID_RELEASE");
     }
   };
+  const assembleLocked = async (signal: AbortSignal): Promise<ControllerBootstrap> => {
+    try {
+      if (!options.lockedStore) throw new ConfidentialControllerError("AUTH_REQUIRED");
+      // §5.5 装配本地优先：已有锁定副本时装配不依赖中台在线（更新检查已在调用方后台进行），
+      // 避免中台不可达把已持有合法副本的环境误判为总控不可用。
+      const locked = (await options.lockedStore.load()) as LockedContent;
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      // 与网络装配同一拼法，保证两条来源产出的 systemPrompt 字节一致。
+      const parts = locked.files.map((file) => `## ${file.path}\n${decoder.decode(file.bytes)}`);
+      return Object.freeze({ version: locked.version, digest: locked.digest, systemPrompt: parts.join("\n\n") });
+    } catch (error) {
+      if (signal.aborted) throw new ConfidentialControllerError("IDENTITY_CHANGED");
+      // getBootstrap 对外只抛 ConfidentialControllerError：锁定存储的 ControllerLockedStoreError
+      // 及读盘/解密异常在此统一包装为 UNAVAILABLE（细分错误由锁定存储状态与审计遥测承接，§5.5）；
+      // 不 import 该错误类以维持本模块对锁定存储仅依赖结构化端口（LockedStorePort）的边界。
+      if (error instanceof ConfidentialControllerError) throw error;
+      throw new ConfidentialControllerError("UNAVAILABLE");
+    }
+  };
   const getBootstrap = async (): Promise<ControllerBootstrap> => {
     if (disposed) throw new ConfidentialControllerError("CANCELLED");
     await auth.restore();
     if (!identity) throw new ConfidentialControllerError("AUTH_REQUIRED");
     // 装配结果属于登录生命周期；下载授权到期不再取消后续模型执行。
-    if (!bootstrap)
-      bootstrap = waitForCaller(assemble(identity, generation.signal), generation.signal);
+    if (!bootstrap) {
+      // §5.5 装配本地优先：缓存未命中先读本地锁定清单；已有副本则不经中台装配，
+      // 更新检查后台进行且失败不影响返回。清单读失败不能当作「有副本」，也不能堵死首装，回退网络路径。
+      let hasLocal = false;
+      if (options.lockedStore) {
+        try {
+          hasLocal = Boolean((await options.lockedStore.status()).current);
+        } catch {
+          hasLocal = false;
+        }
+      }
+      if (hasLocal) {
+        await checkForUpdate().catch(() => {
+          /* 更新失败不影响现版本可用（§5.5）；失败计数由后续审计遥测接入。 */
+        });
+        bootstrap = waitForCaller(assembleLocked(generation.signal), generation.signal);
+      } else {
+        bootstrap = waitForCaller(assemble(identity, generation.signal), generation.signal);
+      }
+    }
     const pending = bootstrap;
     try {
       return await pending;
@@ -122,8 +160,34 @@ export function createControllerApplication(options: {
       throw error;
     }
   };
-  const prefetchController = async () => {
-    if (trust) await getBootstrap();
+  // §5.5 启动门禁解耦（2026-10-27 拍板）：登录门禁只反映登录态，总控装配（authorize/download/install）
+  // 一律在认证成功后后台执行；装配失败（租户无发布物、403/503、验签失败、网络失败）在这里内化，
+  // 由锁定存储状态与审计错误码承接，窗口聚焦或下次登录自动重试，绝不冒泡回 getState/login。
+  const ensureControllerReady = (): Promise<void> => {
+    // 沿用 checkForUpdate 的单飞守卫模式：聚焦风暴反复触发 getState 时，同代次只允许一次首装配在途。
+    if (ensureAttempt) return ensureAttempt;
+    const attemptGeneration = generation;
+    ensureAttempt = (async () => {
+      let assembled = false;
+      try {
+        const status = options.lockedStore ? await options.lockedStore.status() : undefined;
+        if (status?.current) {
+          await checkForUpdate().catch(() => {
+            /* 更新失败不影响现版本可用（§5.5）；失败计数由后续审计遥测接入。 */
+          });
+        } else {
+          await getBootstrap();
+        }
+        assembled = true;
+      } catch {
+        // 首装配失败状态由锁定存储/审计承接，不阻塞登录门禁；useCcodeAccount 在窗口聚焦
+        // 或下次登录时会重新调 getState 进入这里自动重试。
+      } finally {
+        // 只有失败才放行守卫让下一次聚焦/登录重试；成功后本代次不再重复触发。
+        if (!assembled && generation === attemptGeneration) ensureAttempt = undefined;
+      }
+    })();
+    return ensureAttempt;
   };
   auth = new CcodePlatformAuth({
     apiBaseUrl: options.apiBaseUrl,
@@ -136,6 +200,7 @@ export function createControllerApplication(options: {
       identity = nextIdentity;
       bootstrap = undefined;
       updateCheck = undefined;
+      ensureAttempt = undefined;
       if (hadIdentity) for (const channel of channels) channel.invalidate?.();
       for (const listener of stateListeners) {
         try {
@@ -154,8 +219,8 @@ export function createControllerApplication(options: {
         await auth.restore();
         const state = auth.getState();
         if (state.authenticated) {
-          await prefetchController();
-          void checkForUpdate();
+          // §5.5 启动门禁解耦：门禁成败只由会话恢复决定，总控装配后台执行且失败不冒泡。
+          void ensureControllerReady();
         }
         return state;
       },
@@ -182,8 +247,8 @@ export function createControllerApplication(options: {
         } catch {
           /* 回调故障不影响登录结果。 */
         }
-        await prefetchController();
-        void checkForUpdate();
+        // §5.5 启动门禁解耦：登录结果只由凭证验证决定，总控装配后台执行且失败不冒泡。
+        void ensureControllerReady();
         return state;
       },
       logout: () => auth.logout(),
