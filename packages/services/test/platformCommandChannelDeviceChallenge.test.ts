@@ -144,3 +144,65 @@ describe("D2 挑战签名字节合同（修订版冻结向量：绑定请求内�
     ).toBe(false);
   });
 });
+
+/**
+ * D1 注册签名字节合同——冻结向量（2026-10-26 客户端草案，待中台确认）。
+ *
+ * 注册时 deviceId 尚未分配，签名输入改为绑定「待注册公钥」防换钥攻击：
+ * 输入 = JCS({schemaVersion:1, challengeId, nonce, purpose:"register", installKeySpkiSha256}) 的
+ * UTF-8 字节，Ed25519（安装密钥）签名，base64；
+ * installKeySpkiSha256 = sha256(安装公钥 SPKI DER 字节) 的 hex（与 trust-roots keyId 同口径）。
+ */
+const REGISTER_PRIVATE_KEY_PEM = `-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIKCqcL+GbCxRErben0GZ6bnk23L9wo2DIVuV20a1Cbw/
+-----END PRIVATE KEY-----`;
+const REGISTER_INSTALL_SPKI_B64 = "MCowBQYDK2VwAyEAQBKzOvb1O98fs1B4YFw+GOE5LsIN1WC5m8VOp4gcV18=";
+const REGISTER_INSTALL_SPKI_SHA256 = "71d346ae42ef08d547d26b9cadc46b4057b43337722253553caab4bd94d4ab1c";
+const REGISTER_CANONICAL =
+  '{"challengeId":"c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f","installKeySpkiSha256":"' + REGISTER_INSTALL_SPKI_SHA256 +
+  '","nonce":"g-4Rt8Wq2xN6yB3mK9pJ7cV5dH1sL0aZ","purpose":"register","schemaVersion":1}';
+const REGISTER_CANONICAL_SHA256 = "72de68c4e2b67b2bcd3ed8796c074285c63441594316e98f9a0f19a09b88d684";
+const REGISTER_SIGNATURE_B64 =
+  "+KFUAOAX97f2PYopmeldeX6kpIhsLBhC2vmNWS1OR5f4slEvwsrVEMt5IGEX/ZZuoJ09yymt6YuFz8i5VZZkDw==";
+
+describe("D1 注册签名字节合同（草案冻结向量）", () => {
+  it("installKeySpkiSha256 口径与 SPKI DER 绑定，canonical 226 字节与 sha256 冻结一致", () => {
+    const privateKey = createPrivateKey(REGISTER_PRIVATE_KEY_PEM);
+    const publicKey = createPublicKey(privateKey);
+    const spkiDer = publicKey.export({ type: "spki", format: "der" });
+    expect(spkiDer.toString("base64")).toBe(REGISTER_INSTALL_SPKI_B64);
+    expect(createHash("sha256").update(spkiDer).digest("hex")).toBe(REGISTER_INSTALL_SPKI_SHA256);
+    const canonical = canonicalJsonString({
+      schemaVersion: 1,
+      challengeId: "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f",
+      nonce: "g-4Rt8Wq2xN6yB3mK9pJ7cV5dH1sL0aZ",
+      purpose: "register",
+      installKeySpkiSha256: REGISTER_INSTALL_SPKI_SHA256,
+    });
+    expect(canonical).toBe(REGISTER_CANONICAL);
+    expect(Buffer.byteLength(canonical)).toBe(226);
+    expect(createHash("sha256").update(canonical, "utf8").digest("hex")).toBe(REGISTER_CANONICAL_SHA256);
+  });
+
+  it("冻结测试钥签名逐位一致，服务端复现验签通过", () => {
+    expect(ed25519Sign(null, Buffer.from(REGISTER_CANONICAL, "utf8"), REGISTER_PRIVATE_KEY_PEM).toString("base64")).toBe(REGISTER_SIGNATURE_B64);
+    const publicKey = createPublicKey(createPrivateKey(REGISTER_PRIVATE_KEY_PEM));
+    expect(
+      ed25519Verify(null, Buffer.from(REGISTER_CANONICAL, "utf8"), publicKey, Buffer.from(REGISTER_SIGNATURE_B64, "base64")),
+    ).toBe(true);
+  });
+
+  it("换钥攻击回归：换公钥指纹（installKeySpkiSha256）后旧签名必拒", () => {
+    const tampered = canonicalJsonString({
+      schemaVersion: 1,
+      challengeId: "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f",
+      nonce: "g-4Rt8Wq2xN6yB3mK9pJ7cV5dH1sL0aZ",
+      purpose: "register",
+      installKeySpkiSha256: "ff".repeat(32),
+    });
+    const publicKey = createPublicKey(createPrivateKey(REGISTER_PRIVATE_KEY_PEM));
+    expect(
+      ed25519Verify(null, Buffer.from(tampered, "utf8"), publicKey, Buffer.from(REGISTER_SIGNATURE_B64, "base64")),
+    ).toBe(false);
+  });
+});
